@@ -60,6 +60,14 @@ type variableProperties struct {
 			Cflags  []string
 		}
 
+		Malloc_zero_contents struct {
+			Cflags []string `android:"arch_variant"`
+		} `android:"arch_variant"`
+
+		Malloc_pattern_fill_contents struct {
+			Cflags []string `android:"arch_variant"`
+		} `android:"arch_variant"`
+
 		Safestack struct {
 			Cflags []string `android:"arch_variant"`
 		} `android:"arch_variant"`
@@ -220,6 +228,8 @@ type productVariables struct {
 	Malloc_not_svelte                *bool `json:",omitempty"`
 	Malloc_not_svelte_libc32         *bool `json:",omitempty"`
 	Product_shipping_api_level       *int  `json:",omitempty"`
+	Malloc_zero_contents             *bool `json:",omitempty"`
+	Malloc_pattern_fill_contents     *bool `json:",omitempty"`
 	Safestack                        *bool `json:",omitempty"`
 	HostStaticBinaries               *bool `json:",omitempty"`
 	Binder32bit                      *bool `json:",omitempty"`
@@ -395,7 +405,9 @@ func (v *productVariables) SetDefaultConfig() {
 
 		Malloc_not_svelte:        boolPtr(true),
 		Malloc_not_svelte_libc32: boolPtr(true),
-		Safestack:                boolPtr(false),
+		Malloc_zero_contents:         boolPtr(false),
+		Malloc_pattern_fill_contents: boolPtr(false),
+		Safestack:                    boolPtr(false),
 	}
 
 	if runtime.GOOS == "linux" {
