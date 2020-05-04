@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io"
 	"path"
+	"sync"
 
 	"github.com/google/blueprint"
 	"github.com/google/blueprint/proptools"
@@ -161,7 +162,21 @@ type syspropLibraryProperties struct {
 var (
 	pctx         = android.NewPackageContext("android/soong/sysprop")
 	syspropCcTag = dependencyTag{name: "syspropCc"}
+
+	syspropLibrariesKey  = android.NewOnceKey("syspropLibraries")
+	syspropLibrariesLock sync.Mutex
 )
+
+// List of sysprop_library used by property_contexts to perform type check.
+func syspropLibraries(config android.Config) *[]string {
+	return config.Once(syspropLibrariesKey, func() interface{} {
+		return &[]string{}
+	}).(*[]string)
+}
+
+func SyspropLibraries(config android.Config) []string {
+	return append([]string{}, *syspropLibraries(config)...)
+}
 
 func init() {
 	android.RegisterModuleType("sysprop_library", syspropLibraryFactory)
@@ -474,6 +489,14 @@ func syspropLibraryHook(ctx android.LoadHookContext, m *syspropLibrary) {
 			Libs:        []string{stub},
 			Stem:        proptools.StringPtr(m.BaseModuleName()),
 		})
+	}
+
+	if m.ExportedToMake() {
+		syspropLibrariesLock.Lock()
+		defer syspropLibrariesLock.Unlock()
+
+		libraries := syspropLibraries(ctx.Config())
+		*libraries = append(*libraries, "//"+ctx.ModuleDir()+":"+ctx.ModuleName())
 	}
 }
 
