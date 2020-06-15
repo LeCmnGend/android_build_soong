@@ -558,6 +558,14 @@ func MakeDefaultDistFiles(paths ...Path) TaggedDistFiles {
 	return TaggedDistFiles{"": paths}
 }
 
+// A map of OutputFile tag keys to Paths, for disting purposes.
+type TaggedDistFiles map[string]Paths
+
+func MakeDefaultDistFiles(paths ...Path) TaggedDistFiles {
+	// The default OutputFile tag is the empty "" string.
+	return TaggedDistFiles{"": paths}
+}
+
 type hostAndDeviceProperties struct {
 	// If set to true, build a variant of the module for the host.  Defaults to false.
 	Host_supported *bool
