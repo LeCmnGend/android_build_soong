@@ -55,6 +55,7 @@ type LinkableInterface interface {
 
 	SdkVersion() string
 	AlwaysSdk() bool
+	IsSdkVariant() bool
 
 	ToolchainLibrary() bool
 	NdkPrebuiltStl() bool
