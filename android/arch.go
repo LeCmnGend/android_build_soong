@@ -134,6 +134,7 @@ var archVariants = map[ArchType][]string{
 	Arm64: {
 		"armv8_a",
 		"armv8_2a",
+		"armv8-2a-dotprod",
 		"cortex-a53",
 		"cortex-a55",
 		"cortex-a72",
@@ -142,7 +143,7 @@ var archVariants = map[ArchType][]string{
 		"cortex-a76",
 		"kryo",
 		"kryo385",
-                "kryo485",
+        "kryo485",
 		"kryo585",
 	},
 	Mips: {
@@ -194,6 +195,9 @@ var archFeatures = map[ArchType][]string{
 		"neon",
 		"aarch32",
 	},
+	Arm64: {
+		"dotprod",
+	},
 	Mips: {
 		"dspr2",
 		"rev6",
@@ -240,6 +244,11 @@ var archFeatureMap = map[ArchType]map[string][]string{
 		"armv8-2a": {
 			"neon",
 			"aarch32",
+		},
+	},
+	Arm64: {
+		"armv8-2a-dotprod": {
+			"dotprod",
 		},
 	},
 	Mips: {
@@ -1629,7 +1638,7 @@ func getMegaDeviceConfig() []archConfig {
 		{"arm", "armv7-a-neon", "krait", []string{"armeabi-v7a"}},
 		{"arm", "armv7-a-neon", "kryo", []string{"armeabi-v7a"}},
 		{"arm", "armv7-a-neon", "kryo385", []string{"armeabi-v7a"}},
-                {"arm", "armv7-a-neon", "kryo485", []string{"armeabi-v7a"}},
+        {"arm", "armv7-a-neon", "kryo485", []string{"armeabi-v7a"}},
 		{"arm", "armv7-a-neon", "kryo585", []string{"armeabi-v7a"}},
 		{"arm", "armv7-a-neon", "exynos-m1", []string{"armeabi-v7a"}},
 		{"arm", "armv7-a-neon", "exynos-m2", []string{"armeabi-v7a"}},
@@ -1639,10 +1648,8 @@ func getMegaDeviceConfig() []archConfig {
 		{"arm64", "armv8-a", "kryo", []string{"arm64-v8a"}},
 		{"arm64", "armv8-a", "exynos-m1", []string{"arm64-v8a"}},
 		{"arm64", "armv8-a", "exynos-m2", []string{"arm64-v8a"}},
-		{"arm64", "armv8-2a", "cortex-a75", []string{"arm64-v8a"}},
-		{"arm64", "armv8-2a", "cortex-a76", []string{"arm64-v8a"}},
 		{"arm64", "armv8-2a", "kryo385", []string{"arm64-v8a"}},
-                {"arm64", "armv8-2a-dotprod", "kryo485", []string{"arm64-v8a"}},
+        {"arm64", "armv8-2a-dotprod", "kryo485", []string{"arm64-v8a"}},
 		{"arm64", "armv8-2a-dotprod", "kryo585", []string{"arm64-v8a"}},
 		{"arm64", "armv8-2a-dotprod", "cortex-a55", []string{"arm64-v8a"}},
 		{"arm64", "armv8-2a-dotprod", "cortex-a75", []string{"arm64-v8a"}},
