@@ -334,7 +334,7 @@ func processVndkLibrary(mctx android.BottomUpMutatorContext, m *Module) {
 	}
 }
 
-// Sanity check for modules that mustn't be VNDK
+// Check for modules that mustn't be VNDK
 func shouldSkipVndkMutator(m *Module) bool {
 	if !m.Enabled() {
 		return true
