@@ -20,8 +20,6 @@ import (
 	"runtime"
 	"strings"
 
-	"superior/soong/android"
-
 	"github.com/google/blueprint/proptools"
 )
 
@@ -130,9 +128,6 @@ type variableProperties struct {
 			Static_libs  []string
 			Srcs         []string
 		}
-
-		// include Superior variables
-		Superior android.Product_variables
 
 		Flatten_apex struct {
 			Enabled *bool
@@ -356,9 +351,6 @@ type productVariables struct {
 	InstallExtraFlattenedApexes *bool `json:",omitempty"`
 
 	BoardUsesRecoveryAsBoot *bool `json:",omitempty"`
-
-	// include Superior variables
-	Superior android.ProductVariables
 }
 
 func boolPtr(v bool) *bool {
