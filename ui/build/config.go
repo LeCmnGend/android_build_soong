@@ -101,8 +101,8 @@ func NewConfig(ctx Context, args ...string) Config {
 		environ: OsEnvironment(),
 	}
 
-	// Sane default matching ninja
-	ret.parallel = runtime.NumCPU() + 2
+	// Default matching ninja
+	ret.parallel = runtime.NumCPU()
 	ret.keepGoing = 1
 
 	ret.totalRAM = detectTotalRAM(ctx)
