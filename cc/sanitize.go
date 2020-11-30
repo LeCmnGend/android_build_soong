@@ -441,6 +441,17 @@ func toDisableImplicitIntegerChange(flags []string) bool {
 	return false
 }
 
+func toDisableUnsignedShiftBaseChange(flags []string) bool {
+	// Returns true if any flag is fsanitize*integer, and there is
+	// no explicit flag about sanitize=unsigned-shift-base.
+	for _, f := range flags {
+		if strings.HasPrefix(f, "-fsanitize") && strings.Contains(f, "integer") {
+			return true
+		}
+	}
+	return false
+}
+
 func (sanitize *sanitize) flags(ctx ModuleContext, flags Flags) Flags {
 	minimalRuntimeLib := config.UndefinedBehaviorSanitizerMinimalRuntimeLibrary(ctx.toolchain()) + ".a"
 	minimalRuntimePath := "${config.ClangAsanLibDir}/" + minimalRuntimeLib
