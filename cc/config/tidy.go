@@ -30,6 +30,13 @@ func init() {
 		}
 		return strings.Join([]string{
 			"-*",
+			"abseil-*",
+			"android-*",
+			"bugprone-*",
+			"cert-*",
+			// clang-analyzer-* check is slow and enables clang-diagnostic-padded,
+			// which cannot be suppressed yet.
+			// "clang-analyzer-*",
 			"clang-diagnostic-unused-command-line-argument",
 			"google*",
 			"misc-macro-parentheses",
