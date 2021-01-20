@@ -1683,7 +1683,7 @@ func getMegaDeviceConfig() []archConfig {
 func getNdkAbisConfig() []archConfig {
 	return []archConfig{
 		{"arm", "armv7-a", "", []string{"armeabi-v7a"}},
-		{"arm64", "armv8-a", "", []string{"arm64-v8a"}},
+		{"arm64", "armv8-a-branchprot", "", []string{"arm64-v8a"}},
 		{"x86", "", "", []string{"x86"}},
 		{"x86_64", "", "", []string{"x86_64"}},
 	}
