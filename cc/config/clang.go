@@ -203,6 +203,12 @@ func init() {
 		"-Wno-xor-used-as-pow",
 		// http://b/145211022
 		"-Wno-final-dtor-non-final-class",
+
+		// http://b/165945989
+		"-Wno-psabi",
+
+		"-Wno-unknown-warning-option",
+
 	}, " "))
 }
 
