@@ -93,6 +93,19 @@ var ClangUnknownLldflags = sorted([]string{
 
 var ClangLibToolingUnknownCflags = sorted([]string{})
 
+// List of tidy checks that should be disabled globally. When the compiler is
+// updated, some checks enabled by this module may be disabled if they have
+// become more strict, or if they are a new match for a wildcard group like
+// `modernize-*`.
+var ClangTidyDisableChecks = []string{
+	"cert-sig30-c",
+	"misc-no-recursion",
+	"performance-noexcept-move-constructor",
+	"performance-no-int-to-ptr",
+	"performance-unnecessary-value-param",
+	"readability-function-cognitive-complexity", // http://b/175055536
+}
+
 func init() {
 	pctx.StaticVariable("ClangExtraCflags", strings.Join([]string{
 		"-D__compiler_offsetof=__builtin_offsetof",
