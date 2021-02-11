@@ -135,6 +135,18 @@ func init() {
 		// Warnings from clang-10
 		// Nested and array designated initialization is nice to have.
 		"-Wno-c99-designator",
+
+		// Warnings from clang-12
+		"-Wno-gnu-folding-constant",
+
+		// Calls to the APIs that are newer than the min sdk version of the caller should be
+		// guarded with __builtin_available.
+		"-Wunguarded-availability",
+		// This macro allows the bionic versioning.h to indirectly determine whether the
+		// option -Wunguarded-availability is on or not.
+		"-D__ANDROID_UNAVAILABLE_SYMBOLS_ARE_WEAK__",
+		// TODO: remove this once prebuilt SDKs are only using the above macro instead.
+		"-D__ANDROID_UNGUARDED_AVAILABILITY__",
 	}, " "))
 
 	pctx.StaticVariable("ClangExtraCppflags", strings.Join([]string{
