@@ -30,7 +30,6 @@ func init() {
 		}
 		checks := strings.Join([]string{
 			"-*",
-			"abseil-*",
 			"android-*",
 			"bugprone-*",
 			"cert-*",
