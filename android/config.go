@@ -495,21 +495,7 @@ func (c *config) HostJavaToolPath(ctx PathContext, path string) Path {
 	return PathForOutput(ctx, "host", c.PrebuiltOS(), "framework", path)
 }
 
-// HostSystemTool looks for non-hermetic tools from the system we're running on.
-// Generally shouldn't be used, but useful to find the XCode SDK, etc.
-func (c *config) HostSystemTool(name string) string {
-	for _, dir := range filepath.SplitList(c.Getenv("PATH")) {
-		path := filepath.Join(dir, name)
-		if s, err := os.Stat(path); err != nil {
-			continue
-		} else if m := s.Mode(); !s.IsDir() && m&0111 != 0 {
-			return path
-		}
-	}
-	return name
-}
-
-// PrebuiltOS returns the name of the host OS used in prebuilts directories
+// PrebuiltOS returns the name of the host OS used in prebuilts directories.
 func (c *config) PrebuiltOS() string {
 	switch runtime.GOOS {
 	case "linux":
