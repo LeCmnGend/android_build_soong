@@ -31,11 +31,16 @@ import (
 	"github.com/google/blueprint/proptools"
 
 	"android/soong/android/soongconfig"
+	"android/soong/remoteexec"
 )
 
+// Bool re-exports proptools.Bool for the android package.
 var Bool = proptools.Bool
+
+// String re-exports proptools.String for the android package.
 var String = proptools.String
 
+// FutureApiLevel represents unreleased API levels.
 const FutureApiLevel = 10000
 
 // The configuration file name
@@ -1268,3 +1273,8 @@ func (c *deviceConfig) DeviceSecondaryArchVariant() string {
 func (c *deviceConfig) BoardUsesRecoveryAsBoot() bool {
 	return Bool(c.config.productVariables.BoardUsesRecoveryAsBoot)
 }
+
+func (c *config) RBEWrapper() string {
+	return c.GetenvWithDefault("RBE_WRAPPER", remoteexec.DefaultWrapperPath)
+}
+

@@ -1469,7 +1469,7 @@ func metalavaCmd(ctx android.ModuleContext, rule *android.RuleBuilder, javaVersi
 			RSPFile:         implicitsRsp.String(),
 			ToolchainInputs: []string{config.JavaCmd(ctx).String()},
 			Platform:        map[string]string{remoteexec.PoolKey: pool},
-		}).NoVarTemplate(ctx.Config()))
+		}).NoVarTemplate(ctx.Config().RBEWrapper()))
 	}
 
 	cmd.BuiltTool(ctx, "metalava").

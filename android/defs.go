@@ -109,4 +109,8 @@ var (
 
 func init() {
 	pctx.Import("github.com/google/blueprint/bootstrap")
+
+	pctx.VariableFunc("RBEWrapper", func(ctx PackageVarContext) string {
+		return ctx.Config().RBEWrapper()
+	})
 }
