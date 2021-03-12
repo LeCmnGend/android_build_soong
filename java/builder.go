@@ -40,7 +40,7 @@ var (
 	// (if the rule produces .class files) or a .srcjar file (if the rule produces .java files).
 	// .srcjar files are unzipped into a temporary directory when compiled with javac.
 	// TODO(b/143658984): goma can't handle the --system argument to javac.
-	javac, javacRE = remoteexec.MultiCommandStaticRules(pctx, "javac",
+	javac, javacRE = pctx.MultiCommandRemoteStaticRules("javac",
 		blueprint.RuleParams{
 			Command: `rm -rf "$outDir" "$annoDir" "$srcJarDir" && mkdir -p "$outDir" "$annoDir" "$srcJarDir" && ` +
 				`${config.ZipSyncCmd} -d $srcJarDir -l $srcJarDir/list -f "*.java" $srcJars && ` +
@@ -126,7 +126,7 @@ var (
 		},
 		"abis", "allow-prereleased", "screen-densities", "sdk-version", "stem", "apkcerts", "partition")
 
-	turbine, turbineRE = remoteexec.StaticRules(pctx, "turbine",
+	turbine, turbineRE = pctx.RemoteStaticRules("turbine",
 		blueprint.RuleParams{
 			Command: `rm -rf "$outDir" && mkdir -p "$outDir" && ` +
 				`$reTemplate${config.JavaCmd} ${config.JavaVmFlags} -jar ${config.TurbineJar} --output $out.tmp ` +
@@ -154,7 +154,7 @@ var (
 			Platform:          map[string]string{remoteexec.PoolKey: "${config.REJavaPool}"},
 		}, []string{"javacFlags", "bootClasspath", "classpath", "srcJars", "outDir", "javaVersion"}, []string{"implicits"})
 
-	jar, jarRE = remoteexec.StaticRules(pctx, "jar",
+	jar, jarRE = pctx.RemoteStaticRules("jar",
 		blueprint.RuleParams{
 			Command:        `$reTemplate${config.SoongZipCmd} -jar -o $out @$out.rsp`,
 			CommandDeps:    []string{"${config.SoongZipCmd}"},
@@ -169,7 +169,7 @@ var (
 			Platform:     map[string]string{remoteexec.PoolKey: "${config.REJavaPool}"},
 		}, []string{"jarArgs"}, nil)
 
-	zip, zipRE = remoteexec.StaticRules(pctx, "zip",
+	zip, zipRE = pctx.RemoteStaticRules("zip",
 		blueprint.RuleParams{
 			Command:        `${config.SoongZipCmd} -o $out @$out.rsp`,
 			CommandDeps:    []string{"${config.SoongZipCmd}"},
@@ -234,7 +234,6 @@ var (
 func init() {
 	pctx.Import("android/soong/android")
 	pctx.Import("android/soong/java/config")
-	pctx.Import("android/soong/remoteexec")
 }
 
 type javaBuilderFlags struct {
