@@ -81,6 +81,7 @@ var Configuration = map[string]PathConfig{
     "bison":   Allowed,
 	"brotli":  Allowed,
 	"ccache":  Allowed,
+	"aarch64-linux-android-as":  Allowed,
 	"cpio":    Allowed,
 	"curl":    Allowed,
 	"date":    Allowed,
