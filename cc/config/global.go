@@ -123,6 +123,7 @@ var (
 	CppStdVersion             = "gnu++17"
 	ExperimentalCStdVersion   = "gnu11"
 	ExperimentalCppStdVersion = "gnu++2a"
+	Polly                     = false
 
 	NdkMaxPrebuiltVersionInt = 27
 
