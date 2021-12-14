@@ -100,6 +100,7 @@ var Configuration = map[string]PathConfig{
 	"pstree":  Allowed,
 	"python3": Allowed,
 	"python3.6":  Allowed,
+	"python3.10": Allowed,
 	"repo":    Allowed,
 	"rsync":   Allowed,
 	"sh":      Allowed,
