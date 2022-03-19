@@ -115,6 +115,10 @@ func init() {
 		// not emit the table by default on Android since NDK still uses GNU binutils.
 		"-faddrsig",
 
+		// Turn on -fcommon explicitly, since Clang now defaults to -fno-common. The cleanup bug
+		// tracking this is http://b/151457797.
+		"-fcommon",
+
 		// Help catch common 32/64-bit errors.
 		"-Werror=int-conversion",
 
@@ -176,6 +180,10 @@ func init() {
 		// new warnings are fixed.
 		"-Wno-tautological-constant-compare",
 		"-Wno-tautological-type-limit-compare",
+
+		// New warnings to be fixed after clang-r399163
+		"-Wno-non-c-typedef-for-linkage", // http://b/161304145
+
 		// http://b/145210666
 		"-Wno-reorder-init-list",
 		// http://b/145211066
@@ -195,6 +203,8 @@ func init() {
 		"-Wno-enum-enum-conversion",                 // http://b/154138986
 		"-Wno-enum-float-conversion",                // http://b/154255917
 		"-Wno-pessimizing-move",                     // http://b/154270751
+		//Disable -Werror for 'frame-error' compiler warning
+		"-Wno-error=frame-address",
 	}, " "))
 
 	// Extra cflags for external third-party projects to disable warnings that
