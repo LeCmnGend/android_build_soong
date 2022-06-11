@@ -97,6 +97,16 @@ type variableProperties struct {
 			Header_libs         []string `android:"arch_variant"`
 		} `android:"arch_variant"`
 
+		Malloc_use_jemalloc struct {
+			Cflags              []string `android:"arch_variant"`
+			Shared_libs         []string `android:"arch_variant"`
+			Whole_static_libs   []string `android:"arch_variant"`
+			Static_libs         []string `android:"arch_variant"`
+			Exclude_static_libs []string `android:"arch_variant"`
+			Srcs                []string `android:"arch_variant"`
+			Header_libs         []string `android:"arch_variant"`
+		} `android:"arch_variant"`
+
 		Malloc_zero_contents struct {
 			Cflags []string `android:"arch_variant"`
 		} `android:"arch_variant"`
@@ -298,6 +308,7 @@ type ProductVariables struct {
 	Malloc_use_scudo             *bool    `json:",omitempty"`
 	Malloc_use_mimalloc          *bool    `json:",omitempty"`
 	Malloc_not_svelte            *bool    `json:",omitempty"`
+	Malloc_use_jemalloc          *bool    `json:",omitempty"`
 	Malloc_zero_contents         *bool    `json:",omitempty"`
 	Malloc_pattern_fill_contents *bool    `json:",omitempty"`
 	Safestack                    *bool    `json:",omitempty"`
@@ -628,6 +639,7 @@ func (v *ProductVariables) SetDefaultConfig() {
 		Malloc_use_scudo:             boolPtr(false),
 		Malloc_use_mimalloc:          boolPtr(false),
 		Malloc_not_svelte:            boolPtr(true),
+		Malloc_use_jemalloc:          boolPtr(true),
 		Malloc_zero_contents:         boolPtr(true),
 		Malloc_pattern_fill_contents: boolPtr(false),
 		Safestack:                    boolPtr(false),
