@@ -58,11 +58,8 @@ var (
 		"-Wl,--dynamicbase",
 		"-Wl,--nxcompat",
 	}
-	windowsLldflags = []string{
-		"-Wl,--Xlink=-Brepro", // Enable deterministic build
-	}
 	windowsClangLdflags  = append(ClangFilterUnknownCflags(windowsLdflags), []string{}...)
-	windowsClangLldflags = append(ClangFilterUnknownLldflags(windowsClangLdflags), windowsLldflags...)
+	windowsClangLldflags = ClangFilterUnknownLldflags(windowsClangLdflags)
 
 	windowsX86Cflags = []string{
 		"-m32",
@@ -76,7 +73,6 @@ var (
 		"-m32",
 		"-Wl,--large-address-aware",
 		"-L${WindowsGccRoot}/${WindowsGccTriple}/lib32",
-		"-static-libgcc",
 	}
 	windowsX86ClangLdflags = append(ClangFilterUnknownCflags(windowsX86Ldflags), []string{
 		"-B${WindowsGccRoot}/${WindowsGccTriple}/bin",
@@ -90,7 +86,6 @@ var (
 		"-m64",
 		"-L${WindowsGccRoot}/${WindowsGccTriple}/lib64",
 		"-Wl,--high-entropy-va",
-		"-static-libgcc",
 	}
 	windowsX8664ClangLdflags = append(ClangFilterUnknownCflags(windowsX8664Ldflags), []string{
 		"-B${WindowsGccRoot}/${WindowsGccTriple}/bin",

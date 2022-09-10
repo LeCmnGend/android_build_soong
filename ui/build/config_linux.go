@@ -20,8 +20,9 @@ func detectTotalRAM(ctx Context) uint64 {
 	var info syscall.Sysinfo_t
 	err := syscall.Sysinfo(&info)
 	if err != nil {
-		ctx.Printf("Failed to get system memory size: %v", err)
+		ctx.Printf("Failed to get system memory size: %s")
 		return 0
 	}
-	return uint64(info.Totalram) * uint64(info.Unit)
+	memBytes := uint64(info.Totalram) * uint64(info.Unit)
+	return memBytes
 }

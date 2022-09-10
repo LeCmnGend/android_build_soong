@@ -16,7 +16,6 @@ package xml
 
 import (
 	"android/soong/android"
-	"android/soong/etc"
 
 	"github.com/google/blueprint"
 	"github.com/google/blueprint/proptools"
@@ -63,13 +62,17 @@ type prebuiltEtcXmlProperties struct {
 }
 
 type prebuiltEtcXml struct {
-	etc.PrebuiltEtc
+	android.PrebuiltEtc
 
 	properties prebuiltEtcXmlProperties
 }
 
 func (p *prebuiltEtcXml) timestampFilePath(ctx android.ModuleContext) android.WritablePath {
 	return android.PathForModuleOut(ctx, p.PrebuiltEtc.SourceFilePath(ctx).Base()+"-timestamp")
+}
+
+func (p *prebuiltEtcXml) DepsMutator(ctx android.BottomUpMutatorContext) {
+	p.PrebuiltEtc.DepsMutator(ctx)
 }
 
 func (p *prebuiltEtcXml) GenerateAndroidBuildActions(ctx android.ModuleContext) {
@@ -122,8 +125,9 @@ func (p *prebuiltEtcXml) GenerateAndroidBuildActions(ctx android.ModuleContext) 
 func PrebuiltEtcXmlFactory() android.Module {
 	module := &prebuiltEtcXml{}
 	module.AddProperties(&module.properties)
-	etc.InitPrebuiltEtcModule(&module.PrebuiltEtc, "etc")
+
+	android.InitPrebuiltEtcModule(&module.PrebuiltEtc)
 	// This module is device-only
-	android.InitAndroidArchModule(module, android.DeviceSupported, android.MultilibFirst)
+	android.InitAndroidArchModule(module, android.DeviceSupported, android.MultilibCommon)
 	return module
 }

@@ -19,13 +19,7 @@ import (
 	"strings"
 
 	"android/soong/android"
-
-	"github.com/google/blueprint"
 )
-
-var llndkImplDep = struct {
-	blueprint.DependencyTag
-}{}
 
 var (
 	llndkLibrarySuffix = ".llndk"
@@ -82,15 +76,17 @@ func (stub *llndkStubDecorator) compilerFlags(ctx ModuleContext, flags Flags, de
 }
 
 func (stub *llndkStubDecorator) compile(ctx ModuleContext, flags Flags, deps PathDeps) Objects {
-	vndkVer := ctx.Module().(*Module).VndkVersion()
-	if !inList(vndkVer, ctx.Config().PlatformVersionActiveCodenames()) || vndkVer == "" {
-		// For non-enforcing devices, vndkVer is empty. Use "current" in that case, too.
-		vndkVer = "current"
+	vndk_ver := ctx.DeviceConfig().VndkVersion()
+	if vndk_ver == "current" {
+		platform_vndk_ver := ctx.DeviceConfig().PlatformVndkVersion()
+		if !inList(platform_vndk_ver, ctx.Config().PlatformVersionCombinedCodenames()) {
+			vndk_ver = platform_vndk_ver
+		}
+	} else if vndk_ver == "" {
+		// For non-enforcing devices, use "current"
+		vndk_ver = "current"
 	}
-	if stub.stubsVersion() != "" {
-		vndkVer = stub.stubsVersion()
-	}
-	objs, versionScript := compileStubLibrary(ctx, flags, String(stub.Properties.Symbol_file), vndkVer, "--llndk")
+	objs, versionScript := compileStubLibrary(ctx, flags, String(stub.Properties.Symbol_file), vndk_ver, "--vndk")
 	stub.versionScriptPath = versionScript
 	return objs
 }
@@ -137,8 +133,7 @@ func (stub *llndkStubDecorator) link(ctx ModuleContext, flags Flags, deps PathDe
 
 	if !Bool(stub.Properties.Unversioned) {
 		linkerScriptFlag := "-Wl,--version-script," + stub.versionScriptPath.String()
-		flags.Local.LdFlags = append(flags.Local.LdFlags, linkerScriptFlag)
-		flags.LdFlagsDeps = append(flags.LdFlagsDeps, stub.versionScriptPath)
+		flags.LdFlags = append(flags.LdFlags, linkerScriptFlag)
 	}
 
 	if len(stub.Properties.Export_preprocessed_headers) > 0 {
@@ -149,22 +144,18 @@ func (stub *llndkStubDecorator) link(ctx ModuleContext, flags Flags, deps PathDe
 			timestampFiles = append(timestampFiles, stub.processHeaders(ctx, dir, genHeaderOutDir))
 		}
 
+		includePrefix := "-I"
 		if Bool(stub.Properties.Export_headers_as_system) {
-			stub.reexportSystemDirs(genHeaderOutDir)
-		} else {
-			stub.reexportDirs(genHeaderOutDir)
+			includePrefix = "-isystem "
 		}
 
-		stub.reexportDeps(timestampFiles...)
+		stub.reexportFlags([]string{includePrefix + genHeaderOutDir.String()})
+		stub.reexportDeps(timestampFiles)
 	}
 
 	if Bool(stub.Properties.Export_headers_as_system) {
-		stub.exportIncludesAsSystem(ctx)
+		stub.exportIncludes(ctx, "-isystem ")
 		stub.libraryDecorator.flagExporter.Properties.Export_include_dirs = []string{}
-	}
-
-	if stub.stubsVersion() != "" {
-		stub.reexportFlags("-D" + versioningMacroName(ctx.baseModuleName()) + "=" + stub.stubsVersion())
 	}
 
 	return stub.libraryDecorator.link(ctx, flags, deps, objs)
@@ -185,6 +176,7 @@ func NewLLndkStubLibrary() *Module {
 		libraryDecorator: library,
 	}
 	stub.Properties.Vendor_available = BoolPtr(true)
+	module.Properties.UseVndk = true
 	module.compiler = stub
 	module.linker = stub
 	module.installer = nil
@@ -198,14 +190,6 @@ func NewLLndkStubLibrary() *Module {
 	return module
 }
 
-// llndk_library creates a stub llndk shared library based on the provided
-// version file. Example:
-//
-//    llndk_library {
-//        name: "libfoo",
-//        symbol_file: "libfoo.map.txt",
-//        export_include_dirs: ["include_vndk"],
-//    }
 func LlndkLibraryFactory() android.Module {
 	module := NewLLndkStubLibrary()
 	android.InitAndroidArchModule(module, android.DeviceSupported, android.MultilibBoth)
@@ -220,8 +204,6 @@ func (headers *llndkHeadersDecorator) Name(name string) string {
 	return name + llndkHeadersSuffix
 }
 
-// llndk_headers contains a set of c/c++ llndk headers files which are imported
-// by other soongs cc modules.
 func llndkHeadersFactory() android.Module {
 	module, library := NewLibrary(android.DeviceSupported)
 	library.HeaderOnly()

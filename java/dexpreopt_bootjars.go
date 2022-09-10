@@ -22,11 +22,12 @@ import (
 	"android/soong/android"
 	"android/soong/dexpreopt"
 
+	"github.com/google/blueprint/pathtools"
 	"github.com/google/blueprint/proptools"
 )
 
 func init() {
-	RegisterDexpreoptBootJarsComponents(android.InitRegistrationContext)
+	android.RegisterSingletonType("dex_bootjars", dexpreoptBootJarsFactory)
 }
 
 // The image "location" is a symbolic path that with multiarchitecture
@@ -48,108 +49,36 @@ func init() {
 // The location is passed as an argument to the ART tools like dex2oat instead of the real path. The ART tools
 // will then reconstruct the real path, so the rules must have a dependency on the real path.
 
-// Target-independent description of pre-compiled boot image.
 type bootImageConfig struct {
-	// Whether this image is an extension.
-	extension bool
+	name         string
+	modules      []string
+	dexLocations []string
+	dexPaths     android.WritablePaths
+	dir          android.OutputPath
+	symbolsDir   android.OutputPath
+	images       map[android.ArchType]android.OutputPath
+}
 
-	// Image name (used in directory names and ninja rule names).
-	name string
+type bootImage struct {
+	bootImageConfig
 
-	// Basename of the image: the resulting filenames are <stem>[-<jar>].{art,oat,vdex}.
-	stem string
+	installs           map[android.ArchType]android.RuleBuilderInstalls
+	vdexInstalls       map[android.ArchType]android.RuleBuilderInstalls
+	unstrippedInstalls map[android.ArchType]android.RuleBuilderInstalls
 
-	// Output directory for the image files.
-	dir android.OutputPath
-
-	// Output directory for the image files with debug symbols.
-	symbolsDir android.OutputPath
-
-	// Subdirectory where the image files are installed.
-	installSubdir string
-
-	// The names of jars that constitute this image.
-	modules []string
-
-	// The "locations" of jars.
-	dexLocations     []string // for this image
-	dexLocationsDeps []string // for the dependency images and in this image
-
-	// File paths to jars.
-	dexPaths     android.WritablePaths // for this image
-	dexPathsDeps android.WritablePaths // for the dependency images and in this image
-
-	// The "locations" of the dependency images and in this image.
-	imageLocations []string
-
-	// File path to a zip archive with all image files (or nil, if not needed).
-	zip android.WritablePath
-
-	// Rules which should be used in make to install the outputs.
 	profileInstalls android.RuleBuilderInstalls
-
-	// Target-dependent fields.
-	variants []*bootImageVariant
 }
 
-// Target-dependent description of pre-compiled boot image.
-type bootImageVariant struct {
-	*bootImageConfig
+func newBootImage(ctx android.PathContext, config bootImageConfig) *bootImage {
+	image := &bootImage{
+		bootImageConfig: config,
 
-	// Target for which the image is generated.
-	target android.Target
-
-	// Paths to image files.
-	images     android.OutputPath  // first image file
-	imagesDeps android.OutputPaths // all files
-
-	// Only for extensions, paths to the primary boot images.
-	primaryImages android.OutputPath
-
-	// Rules which should be used in make to install the outputs.
-	installs           android.RuleBuilderInstalls
-	vdexInstalls       android.RuleBuilderInstalls
-	unstrippedInstalls android.RuleBuilderInstalls
-}
-
-func (image bootImageConfig) getVariant(target android.Target) *bootImageVariant {
-	for _, variant := range image.variants {
-		if variant.target.Os == target.Os && variant.target.Arch.ArchType == target.Arch.ArchType {
-			return variant
-		}
+		installs:           make(map[android.ArchType]android.RuleBuilderInstalls),
+		vdexInstalls:       make(map[android.ArchType]android.RuleBuilderInstalls),
+		unstrippedInstalls: make(map[android.ArchType]android.RuleBuilderInstalls),
 	}
-	return nil
-}
 
-func (image bootImageConfig) moduleName(idx int) string {
-	// Dexpreopt on the boot class path produces multiple files. The first dex file
-	// is converted into 'name'.art (to match the legacy assumption that 'name'.art
-	// exists), and the rest are converted to 'name'-<jar>.art.
-	m := image.modules[idx]
-	name := image.stem
-	if idx != 0 || image.extension {
-		name += "-" + stemOf(m)
-	}
-	return name
-}
-
-func (image bootImageConfig) firstModuleNameOrStem() string {
-	if len(image.modules) > 0 {
-		return image.moduleName(0)
-	} else {
-		return image.stem
-	}
-}
-
-func (image bootImageConfig) moduleFiles(ctx android.PathContext, dir android.OutputPath, exts ...string) android.OutputPaths {
-	ret := make(android.OutputPaths, 0, len(image.modules)*len(exts))
-	for i := range image.modules {
-		name := image.moduleName(i)
-		for _, ext := range exts {
-			ret = append(ret, dir.Join(ctx, name+ext))
-		}
-	}
-	return ret
+	return image
 }
 
 func concat(lists ...[]string) []string {
@@ -168,15 +97,7 @@ func dexpreoptBootJarsFactory() android.Singleton {
 	return &dexpreoptBootJars{}
 }
 
-func RegisterDexpreoptBootJarsComponents(ctx android.RegistrationContext) {
-	ctx.RegisterSingletonType("dex_bootjars", dexpreoptBootJarsFactory)
-}
-
 func skipDexpreoptBootJars(ctx android.PathContext) bool {
-	if dexpreopt.GetGlobalConfig(ctx).DisablePreopt {
-		return true
-	}
-
 	if ctx.Config().UnbundledBuild() {
 		return true
 	}
@@ -190,23 +111,8 @@ func skipDexpreoptBootJars(ctx android.PathContext) bool {
 }
 
 type dexpreoptBootJars struct {
-	defaultBootImage *bootImageConfig
-	otherImages      []*bootImageConfig
-
-	dexpreoptConfigForMake android.WritablePath
-}
-
-// Accessor function for the apex package. Returns nil if dexpreopt is disabled.
-func DexpreoptedArtApexJars(ctx android.BuilderContext) map[android.ArchType]android.OutputPaths {
-	if skipDexpreoptBootJars(ctx) {
-		return nil
-	}
-	// Include dexpreopt files for the primary boot image.
-	files := map[android.ArchType]android.OutputPaths{}
-	for _, variant := range artBootImageConfig(ctx).variants {
-		files[variant.target.Arch.ArchType] = variant.imagesDeps
-	}
-	return files
+	defaultBootImage *bootImage
+	otherImages      []*bootImage
 }
 
 // dexpreoptBoot singleton rules
@@ -214,15 +120,8 @@ func (d *dexpreoptBootJars) GenerateBuildActions(ctx android.SingletonContext) {
 	if skipDexpreoptBootJars(ctx) {
 		return
 	}
-	if dexpreopt.GetCachedGlobalSoongConfig(ctx) == nil {
-		// No module has enabled dexpreopting, so we assume there will be no boot image to make.
-		return
-	}
 
-	d.dexpreoptConfigForMake = android.PathForOutput(ctx, ctx.Config().DeviceName(), "dexpreopt.config")
-	writeGlobalConfigForMake(ctx, d.dexpreoptConfigForMake)
-
-	global := dexpreopt.GetGlobalConfig(ctx)
+	global := dexpreoptGlobalConfig(ctx)
 
 	// Skip recompiling the boot image for the second sanitization phase. We'll get separate paths
 	// and invalidate first-stage artifacts which are crucial to SANITIZE_LITE builds.
@@ -236,86 +135,32 @@ func (d *dexpreoptBootJars) GenerateBuildActions(ctx android.SingletonContext) {
 
 	// Always create the default boot image first, to get a unique profile rule for all images.
 	d.defaultBootImage = buildBootImage(ctx, defaultBootImageConfig(ctx))
-	// Create boot image for the ART apex (build artifacts are accessed via the global boot image config).
-	d.otherImages = append(d.otherImages, buildBootImage(ctx, artBootImageConfig(ctx)))
+	if global.GenerateApexImage {
+		d.otherImages = append(d.otherImages, buildBootImage(ctx, apexBootImageConfig(ctx)))
+	}
 
 	dumpOatRules(ctx, d.defaultBootImage)
 }
 
-// Inspect this module to see if it contains a bootclasspath dex jar.
-// Note that the same jar may occur in multiple modules.
-// This logic is tested in the apex package to avoid import cycle apex <-> java.
-func getBootImageJar(ctx android.SingletonContext, image *bootImageConfig, module android.Module) (int, android.Path) {
-	// All apex Java libraries have non-installable platform variants, skip them.
-	if module.IsSkipInstall() {
-		return -1, nil
-	}
+// buildBootImage takes a bootImageConfig, creates rules to build it, and returns a *bootImage.
+func buildBootImage(ctx android.SingletonContext, config bootImageConfig) *bootImage {
+	global := dexpreoptGlobalConfig(ctx)
 
-	jar, hasJar := module.(interface{ DexJar() android.Path })
-	if !hasJar {
-		return -1, nil
-	}
+	image := newBootImage(ctx, config)
 
-	name := ctx.ModuleName(module)
-	index := android.IndexList(name, image.modules)
-	if index == -1 {
-		return -1, nil
-	}
-
-	// Check that this module satisfies constraints for a particular boot image.
-	apex, isApexModule := module.(android.ApexModule)
-	fromUpdatableApex := isApexModule && apex.Updatable()
-	if image.name == artBootImageName {
-		if isApexModule && len(apex.InApexes()) > 0 && allHavePrefix(apex.InApexes(), "com.android.art.") {
-			// ok: found the jar in the ART apex
-		} else if isApexModule && apex.IsForPlatform() && Bool(module.(*Library).deviceProperties.Hostdex) {
-			// exception (skip and continue): special "hostdex" platform variant
-			return -1, nil
-		} else if name == "jacocoagent" && ctx.Config().IsEnvTrue("EMMA_INSTRUMENT_FRAMEWORK") {
-			// exception (skip and continue): Jacoco platform variant for a coverage build
-			return -1, nil
-		} else if fromUpdatableApex {
-			// error: this jar is part of an updatable apex other than ART
-			ctx.Errorf("module %q from updatable apexes %q is not allowed in the ART boot image", name, apex.InApexes())
-		} else {
-			// error: this jar is part of the platform or a non-updatable apex
-			ctx.Errorf("module %q is not allowed in the ART boot image", name)
-		}
-	} else if image.name == frameworkBootImageName {
-		if !fromUpdatableApex {
-			// ok: this jar is part of the platform or a non-updatable apex
-		} else {
-			// error: this jar is part of an updatable apex
-			ctx.Errorf("module %q from updatable apexes %q is not allowed in the framework boot image", name, apex.InApexes())
-		}
-	} else {
-		panic("unknown boot image: " + image.name)
-	}
-
-	return index, jar.DexJar()
-}
-
-func allHavePrefix(list []string, prefix string) bool {
-	for _, s := range list {
-		if !strings.HasPrefix(s, prefix) {
-			return false
-		}
-	}
-	return true
-}
-
-// buildBootImage takes a bootImageConfig, creates rules to build it, and returns the image.
-func buildBootImage(ctx android.SingletonContext, image *bootImageConfig) *bootImageConfig {
-	// Collect dex jar paths for the boot image modules.
-	// This logic is tested in the apex package to avoid import cycle apex <-> java.
 	bootDexJars := make(android.Paths, len(image.modules))
+
 	ctx.VisitAllModules(func(module android.Module) {
 		if m, ok := module.(interface{ BootJarProvider() bool }); !ok ||
 			!m.BootJarProvider() {
 			return
 		}
-		if i, j := getBootImageJar(ctx, image, module); i != -1 {
-			bootDexJars[i] = j
+		// Collect dex jar paths for the modules listed above.
+		if j, ok := module.(interface{ DexJar() android.Path }); ok {
+			name := ctx.ModuleName(module)
+			if i := android.IndexList(name, image.modules); i != -1 {
+				bootDexJars[i] = j.DexJar()
+			}
 		}
 	})
 
@@ -327,8 +172,7 @@ func buildBootImage(ctx android.SingletonContext, image *bootImageConfig) *bootI
 				missingDeps = append(missingDeps, image.modules[i])
 				bootDexJars[i] = android.PathForOutput(ctx, "missing")
 			} else {
-				ctx.Errorf("failed to find a dex jar path for module '%s'"+
-					", note that some jars may be filtered out by module constraints",
+				ctx.Errorf("failed to find dex jar path for module %q",
 					image.modules[i])
 			}
 		}
@@ -346,42 +190,31 @@ func buildBootImage(ctx android.SingletonContext, image *bootImageConfig) *bootI
 	}
 
 	profile := bootImageProfileRule(ctx, image, missingDeps)
-	bootFrameworkProfileRule(ctx, image, missingDeps)
-	updatableBcpPackagesRule(ctx, image, missingDeps)
 
-	var allFiles android.Paths
-	for _, variant := range image.variants {
-		files := buildBootImageVariant(ctx, variant, profile, missingDeps)
-		allFiles = append(allFiles, files.Paths()...)
-	}
+	if !global.DisablePreopt {
+		targets := ctx.Config().Targets[android.Android]
+		if ctx.Config().SecondArchIsTranslated() {
+			targets = targets[:1]
+		}
 
-	if image.zip != nil {
-		rule := android.NewRuleBuilder()
-		rule.Command().
-			BuiltTool(ctx, "soong_zip").
-			FlagWithOutput("-o ", image.zip).
-			FlagWithArg("-C ", image.dir.String()).
-			FlagWithInputList("-f ", allFiles, " -f ")
-
-		rule.Build(pctx, ctx, "zip_"+image.name, "zip "+image.name+" image")
+		for _, target := range targets {
+			buildBootImageRuleForArch(ctx, image, target.Arch.ArchType, profile, missingDeps)
+		}
 	}
 
 	return image
 }
 
-func buildBootImageVariant(ctx android.SingletonContext, image *bootImageVariant,
-	profile android.Path, missingDeps []string) android.WritablePaths {
+func buildBootImageRuleForArch(ctx android.SingletonContext, image *bootImage,
+	arch android.ArchType, profile android.Path, missingDeps []string) {
 
-	globalSoong := dexpreopt.GetCachedGlobalSoongConfig(ctx)
-	global := dexpreopt.GetGlobalConfig(ctx)
+	global := dexpreoptGlobalConfig(ctx)
 
-	arch := image.target.Arch.ArchType
-	symbolsDir := image.symbolsDir.Join(ctx, image.installSubdir, arch.String())
-	symbolsFile := symbolsDir.Join(ctx, image.stem+".oat")
-	outputDir := image.dir.Join(ctx, image.installSubdir, arch.String())
-	outputPath := outputDir.Join(ctx, image.stem+".oat")
-	oatLocation := dexpreopt.PathToLocation(outputPath, arch)
-	imagePath := outputPath.ReplaceExtension(ctx, "art")
+	symbolsDir := image.symbolsDir.Join(ctx, "system/framework", arch.String())
+	symbolsFile := symbolsDir.Join(ctx, image.name+".oat")
+	outputDir := image.dir.Join(ctx, "system/framework", arch.String())
+	outputPath := image.images[arch]
+	oatLocation := pathtools.ReplaceExtension(dexpreopt.PathToLocation(outputPath, arch), "oat")
 
 	rule := android.NewRuleBuilder()
 	rule.MissingDeps(missingDeps)
@@ -409,7 +242,7 @@ func buildBootImageVariant(ctx android.SingletonContext, image *bootImageVariant
 
 	invocationPath := outputPath.ReplaceExtension(ctx, "invocation")
 
-	cmd.Tool(globalSoong.Dex2oat).
+	cmd.Tool(global.Tools.Dex2oat).
 		Flag("--avoid-storing-invocation").
 		FlagWithOutput("--write-invocation-to=", invocationPath).ImplicitOutput(invocationPath).
 		Flag("--runtime-arg").FlagWithArg("-Xms", global.Dex2oatImageXms).
@@ -418,20 +251,12 @@ func buildBootImageVariant(ctx android.SingletonContext, image *bootImageVariant
 	if profile != nil {
 		cmd.FlagWithArg("--compiler-filter=", "speed-profile")
 		cmd.FlagWithInput("--profile-file=", profile)
+	} else if global.PreloadedClasses.Valid() {
+		cmd.FlagWithInput("--image-classes=", global.PreloadedClasses.Path())
 	}
 
 	if global.DirtyImageObjects.Valid() {
 		cmd.FlagWithInput("--dirty-image-objects=", global.DirtyImageObjects.Path())
-	}
-
-	if image.extension {
-		artImage := image.primaryImages
-		cmd.
-			Flag("--runtime-arg").FlagWithInputList("-Xbootclasspath:", image.dexPathsDeps.Paths(), ":").
-			Flag("--runtime-arg").FlagWithList("-Xbootclasspath-locations:", image.dexLocationsDeps, ":").
-			FlagWithArg("--boot-image=", dexpreopt.PathToLocation(artImage, arch)).Implicit(artImage)
-	} else {
-		cmd.FlagWithArg("--base=", ctx.Config().LibartImgDeviceBaseAddress())
 	}
 
 	cmd.
@@ -439,18 +264,17 @@ func buildBootImageVariant(ctx android.SingletonContext, image *bootImageVariant
 		FlagForEachArg("--dex-location=", image.dexLocations).
 		Flag("--generate-debug-info").
 		Flag("--generate-build-id").
-		Flag("--image-format=lz4hc").
-		FlagWithArg("--oat-symbols=", symbolsFile.String()).
+		FlagWithOutput("--oat-symbols=", symbolsFile).
 		Flag("--strip").
-		FlagWithArg("--oat-file=", outputPath.String()).
+		FlagWithOutput("--oat-file=", outputPath.ReplaceExtension(ctx, "oat")).
 		FlagWithArg("--oat-location=", oatLocation).
-		FlagWithArg("--image=", imagePath.String()).
+		FlagWithOutput("--image=", outputPath).
+		FlagWithArg("--base=", ctx.Config().LibartImgDeviceBaseAddress()).
 		FlagWithArg("--instruction-set=", arch.String()).
 		FlagWithArg("--instruction-set-variant=", global.CpuVariant[arch]).
 		FlagWithArg("--instruction-set-features=", global.InstructionSetFeatures[arch]).
 		FlagWithArg("--android-root=", global.EmptyDirectory).
 		FlagWithArg("--no-inline-from=", "core-oj.jar").
-		Flag("--force-determinism").
 		Flag("--abort-on-hard-verifier-error")
 
 	if global.BootFlags != "" {
@@ -463,64 +287,68 @@ func buildBootImageVariant(ctx android.SingletonContext, image *bootImageVariant
 
 	cmd.Textf(`|| ( echo %s ; false )`, proptools.ShellEscape(failureMessage))
 
-	installDir := filepath.Join("/", image.installSubdir, arch.String())
-	vdexInstallDir := filepath.Join("/", image.installSubdir)
+	installDir := filepath.Join("/system/framework", arch.String())
+	vdexInstallDir := filepath.Join("/system/framework")
 
+	var extraFiles android.WritablePaths
 	var vdexInstalls android.RuleBuilderInstalls
 	var unstrippedInstalls android.RuleBuilderInstalls
 
-	var zipFiles android.WritablePaths
+	// dex preopt on the bootclasspath produces multiple files.  The first dex file
+	// is converted into to 'name'.art (to match the legacy assumption that 'name'.art
+	// exists), and the rest are converted to 'name'-<jar>.art.
+	// In addition, each .art file has an associated .oat and .vdex file, and an
+	// unstripped .oat file
+	for i, m := range image.modules {
+		name := image.name
+		if i != 0 {
+			name += "-" + m
+		}
 
-	for _, artOrOat := range image.moduleFiles(ctx, outputDir, ".art", ".oat") {
-		cmd.ImplicitOutput(artOrOat)
-		zipFiles = append(zipFiles, artOrOat)
+		art := outputDir.Join(ctx, name+".art")
+		oat := outputDir.Join(ctx, name+".oat")
+		vdex := outputDir.Join(ctx, name+".vdex")
+		unstrippedOat := symbolsDir.Join(ctx, name+".oat")
 
-		// Install the .oat and .art files
-		rule.Install(artOrOat, filepath.Join(installDir, artOrOat.Base()))
-	}
+		extraFiles = append(extraFiles, art, oat, vdex, unstrippedOat)
 
-	for _, vdex := range image.moduleFiles(ctx, outputDir, ".vdex") {
-		cmd.ImplicitOutput(vdex)
-		zipFiles = append(zipFiles, vdex)
+		// Install the .oat and .art files.
+		rule.Install(art, filepath.Join(installDir, art.Base()))
+		rule.Install(oat, filepath.Join(installDir, oat.Base()))
 
 		// The vdex files are identical between architectures, install them to a shared location.  The Make rules will
 		// only use the install rules for one architecture, and will create symlinks into the architecture-specific
 		// directories.
 		vdexInstalls = append(vdexInstalls,
 			android.RuleBuilderInstall{vdex, filepath.Join(vdexInstallDir, vdex.Base())})
-	}
-
-	for _, unstrippedOat := range image.moduleFiles(ctx, symbolsDir, ".oat") {
-		cmd.ImplicitOutput(unstrippedOat)
 
 		// Install the unstripped oat files.  The Make rules will put these in $(TARGET_OUT_UNSTRIPPED)
 		unstrippedInstalls = append(unstrippedInstalls,
 			android.RuleBuilderInstall{unstrippedOat, filepath.Join(installDir, unstrippedOat.Base())})
 	}
 
+	cmd.ImplicitOutputs(extraFiles)
+
 	rule.Build(pctx, ctx, image.name+"JarsDexpreopt_"+arch.String(), "dexpreopt "+image.name+" jars "+arch.String())
 
 	// save output and installed files for makevars
-	image.installs = rule.Installs()
-	image.vdexInstalls = vdexInstalls
-	image.unstrippedInstalls = unstrippedInstalls
-
-	return zipFiles
+	image.installs[arch] = rule.Installs()
+	image.vdexInstalls[arch] = vdexInstalls
+	image.unstrippedInstalls[arch] = unstrippedInstalls
 }
 
 const failureMessage = `ERROR: Dex2oat failed to compile a boot image.
 It is likely that the boot classpath is inconsistent.
 Rebuild with ART_BOOT_IMAGE_EXTRA_ARGS="--runtime-arg -verbose:verifier" to see verification errors.`
 
-func bootImageProfileRule(ctx android.SingletonContext, image *bootImageConfig, missingDeps []string) android.WritablePath {
-	globalSoong := dexpreopt.GetCachedGlobalSoongConfig(ctx)
-	global := dexpreopt.GetGlobalConfig(ctx)
+func bootImageProfileRule(ctx android.SingletonContext, image *bootImage, missingDeps []string) android.WritablePath {
+	global := dexpreoptGlobalConfig(ctx)
 
-	if global.DisableGenerateProfile || ctx.Config().IsPdkBuild() || ctx.Config().UnbundledBuild() {
+	if !global.UseProfileForBootImage || ctx.Config().IsPdkBuild() || ctx.Config().UnbundledBuild() {
 		return nil
 	}
-	profile := ctx.Config().Once(bootImageProfileRuleKey, func() interface{} {
-		defaultProfile := "frameworks/base/config/boot-image-profile.txt"
+	return ctx.Config().Once(bootImageProfileRuleKey, func() interface{} {
+		tools := global.Tools
 
 		rule := android.NewRuleBuilder()
 		rule.MissingDeps(missingDeps)
@@ -532,23 +360,28 @@ func bootImageProfileRule(ctx android.SingletonContext, image *bootImageConfig, 
 			bootImageProfile = combinedBootImageProfile
 		} else if len(global.BootImageProfiles) == 1 {
 			bootImageProfile = global.BootImageProfiles[0]
-		} else if path := android.ExistentPathForSource(ctx, defaultProfile); path.Valid() {
-			bootImageProfile = path.Path()
 		} else {
-			// No profile (not even a default one, which is the case on some branches
-			// like master-art-host that don't have frameworks/base).
-			// Return nil and continue without profile.
-			return nil
+			// If not set, use the default.  Some branches like master-art-host don't have frameworks/base, so manually
+			// handle the case that the default is missing.  Those branches won't attempt to build the profile rule,
+			// and if they do they'll get a missing deps error.
+			defaultProfile := "frameworks/base/config/boot-image-profile.txt"
+			path := android.ExistentPathForSource(ctx, defaultProfile)
+			if path.Valid() {
+				bootImageProfile = path.Path()
+			} else {
+				missingDeps = append(missingDeps, defaultProfile)
+				bootImageProfile = android.PathForOutput(ctx, "missing")
+			}
 		}
 
 		profile := image.dir.Join(ctx, "boot.prof")
 
 		rule.Command().
 			Text(`ANDROID_LOG_TAGS="*:e"`).
-			Tool(globalSoong.Profman).
+			Tool(tools.Profman).
 			FlagWithInput("--create-profile-from=", bootImageProfile).
-			FlagForEachInput("--apk=", image.dexPathsDeps.Paths()).
-			FlagForEachArg("--dex-location=", image.dexLocationsDeps).
+			FlagForEachInput("--apk=", image.dexPaths.Paths()).
+			FlagForEachArg("--dex-location=", image.dexLocations).
 			FlagWithOutput("--reference-profile-file=", profile)
 
 		rule.Install(profile, "/system/etc/boot-image.prof")
@@ -558,128 +391,29 @@ func bootImageProfileRule(ctx android.SingletonContext, image *bootImageConfig, 
 		image.profileInstalls = rule.Installs()
 
 		return profile
-	})
-	if profile == nil {
-		return nil // wrap nil into a typed pointer with value nil
-	}
-	return profile.(android.WritablePath)
+	}).(android.WritablePath)
 }
 
 var bootImageProfileRuleKey = android.NewOnceKey("bootImageProfileRule")
 
-func bootFrameworkProfileRule(ctx android.SingletonContext, image *bootImageConfig, missingDeps []string) android.WritablePath {
-	globalSoong := dexpreopt.GetCachedGlobalSoongConfig(ctx)
-	global := dexpreopt.GetGlobalConfig(ctx)
-
-	if global.DisableGenerateProfile || ctx.Config().IsPdkBuild() || ctx.Config().UnbundledBuild() {
-		return nil
+func dumpOatRules(ctx android.SingletonContext, image *bootImage) {
+	var archs []android.ArchType
+	for arch := range image.images {
+		archs = append(archs, arch)
 	}
-	return ctx.Config().Once(bootFrameworkProfileRuleKey, func() interface{} {
-		rule := android.NewRuleBuilder()
-		rule.MissingDeps(missingDeps)
+	sort.Slice(archs, func(i, j int) bool { return archs[i].String() < archs[j].String() })
 
-		// Some branches like master-art-host don't have frameworks/base, so manually
-		// handle the case that the default is missing.  Those branches won't attempt to build the profile rule,
-		// and if they do they'll get a missing deps error.
-		defaultProfile := "frameworks/base/config/boot-profile.txt"
-		path := android.ExistentPathForSource(ctx, defaultProfile)
-		var bootFrameworkProfile android.Path
-		if path.Valid() {
-			bootFrameworkProfile = path.Path()
-		} else {
-			missingDeps = append(missingDeps, defaultProfile)
-			bootFrameworkProfile = android.PathForOutput(ctx, "missing")
-		}
-
-		profile := image.dir.Join(ctx, "boot.bprof")
-
-		rule.Command().
-			Text(`ANDROID_LOG_TAGS="*:e"`).
-			Tool(globalSoong.Profman).
-			Flag("--generate-boot-profile").
-			FlagWithInput("--create-profile-from=", bootFrameworkProfile).
-			FlagForEachInput("--apk=", image.dexPathsDeps.Paths()).
-			FlagForEachArg("--dex-location=", image.dexLocationsDeps).
-			FlagWithOutput("--reference-profile-file=", profile)
-
-		rule.Install(profile, "/system/etc/boot-image.bprof")
-		rule.Build(pctx, ctx, "bootFrameworkProfile", "profile boot framework jars")
-		image.profileInstalls = append(image.profileInstalls, rule.Installs()...)
-
-		return profile
-	}).(android.WritablePath)
-}
-
-var bootFrameworkProfileRuleKey = android.NewOnceKey("bootFrameworkProfileRule")
-
-func updatableBcpPackagesRule(ctx android.SingletonContext, image *bootImageConfig, missingDeps []string) android.WritablePath {
-	if ctx.Config().IsPdkBuild() || ctx.Config().UnbundledBuild() {
-		return nil
-	}
-
-	return ctx.Config().Once(updatableBcpPackagesRuleKey, func() interface{} {
-		global := dexpreopt.GetGlobalConfig(ctx)
-		updatableModules := dexpreopt.GetJarsFromApexJarPairs(global.UpdatableBootJars)
-
-		// Collect `permitted_packages` for updatable boot jars.
-		var updatablePackages []string
-		ctx.VisitAllModules(func(module android.Module) {
-			if j, ok := module.(PermittedPackagesForUpdatableBootJars); ok {
-				name := ctx.ModuleName(module)
-				if i := android.IndexList(name, updatableModules); i != -1 {
-					pp := j.PermittedPackagesForUpdatableBootJars()
-					if len(pp) > 0 {
-						updatablePackages = append(updatablePackages, pp...)
-					} else {
-						ctx.Errorf("Missing permitted_packages for %s", name)
-					}
-					// Do not match the same library repeatedly.
-					updatableModules = append(updatableModules[:i], updatableModules[i+1:]...)
-				}
-			}
-		})
-
-		// Sort updatable packages to ensure deterministic ordering.
-		sort.Strings(updatablePackages)
-
-		updatableBcpPackagesName := "updatable-bcp-packages.txt"
-		updatableBcpPackages := image.dir.Join(ctx, updatableBcpPackagesName)
-
-		ctx.Build(pctx, android.BuildParams{
-			Rule:   android.WriteFile,
-			Output: updatableBcpPackages,
-			Args: map[string]string{
-				// WriteFile automatically adds the last end-of-line.
-				"content": strings.Join(updatablePackages, "\\n"),
-			},
-		})
-
-		rule := android.NewRuleBuilder()
-		rule.MissingDeps(missingDeps)
-		rule.Install(updatableBcpPackages, "/system/etc/"+updatableBcpPackagesName)
-		// TODO: Rename `profileInstalls` to `extraInstalls`?
-		// Maybe even move the field out of the bootImageConfig into some higher level type?
-		image.profileInstalls = append(image.profileInstalls, rule.Installs()...)
-
-		return updatableBcpPackages
-	}).(android.WritablePath)
-}
-
-var updatableBcpPackagesRuleKey = android.NewOnceKey("updatableBcpPackagesRule")
-
-func dumpOatRules(ctx android.SingletonContext, image *bootImageConfig) {
 	var allPhonies android.Paths
-	for _, image := range image.variants {
-		arch := image.target.Arch.ArchType
+	for _, arch := range archs {
 		// Create a rule to call oatdump.
 		output := android.PathForOutput(ctx, "boot."+arch.String()+".oatdump.txt")
 		rule := android.NewRuleBuilder()
 		rule.Command().
 			// TODO: for now, use the debug version for better error reporting
-			BuiltTool(ctx, "oatdumpd").
-			FlagWithInputList("--runtime-arg -Xbootclasspath:", image.dexPathsDeps.Paths(), ":").
-			FlagWithList("--runtime-arg -Xbootclasspath-locations:", image.dexLocationsDeps, ":").
-			FlagWithArg("--image=", strings.Join(image.imageLocations, ":")).Implicits(image.imagesDeps.Paths()).
+			Tool(ctx.Config().HostToolPath(ctx, "oatdumpd")).
+			FlagWithInputList("--runtime-arg -Xbootclasspath:", image.dexPaths.Paths(), ":").
+			FlagWithList("--runtime-arg -Xbootclasspath-locations:", image.dexLocations, ":").
+			FlagWithArg("--image=", dexpreopt.PathToLocation(image.images[arch], arch)).Implicit(image.images[arch]).
 			FlagWithOutput("--output=", output).
 			FlagWithArg("--instruction-set=", arch.String())
 		rule.Build(pctx, ctx, "dump-oat-boot-"+arch.String(), "dump oat boot "+arch.String())
@@ -706,45 +440,30 @@ func dumpOatRules(ctx android.SingletonContext, image *bootImageConfig) {
 
 }
 
-func writeGlobalConfigForMake(ctx android.SingletonContext, path android.WritablePath) {
-	data := dexpreopt.GetGlobalConfigRawData(ctx)
-
-	ctx.Build(pctx, android.BuildParams{
-		Rule:   android.WriteFile,
-		Output: path,
-		Args: map[string]string{
-			"content": string(data),
-		},
-	})
-}
-
 // Export paths for default boot image to Make
 func (d *dexpreoptBootJars) MakeVars(ctx android.MakeVarsContext) {
-	if d.dexpreoptConfigForMake != nil {
-		ctx.Strict("DEX_PREOPT_CONFIG_FOR_MAKE", d.dexpreoptConfigForMake.String())
-		ctx.Strict("DEX_PREOPT_SOONG_CONFIG_FOR_MAKE", android.PathForOutput(ctx, "dexpreopt_soong.config").String())
-	}
-
 	image := d.defaultBootImage
 	if image != nil {
 		ctx.Strict("DEXPREOPT_IMAGE_PROFILE_BUILT_INSTALLED", image.profileInstalls.String())
-		ctx.Strict("DEXPREOPT_BOOTCLASSPATH_DEX_FILES", strings.Join(image.dexPathsDeps.Strings(), " "))
-		ctx.Strict("DEXPREOPT_BOOTCLASSPATH_DEX_LOCATIONS", strings.Join(image.dexLocationsDeps, " "))
+		ctx.Strict("DEXPREOPT_BOOTCLASSPATH_DEX_FILES", strings.Join(image.dexPaths.Strings(), " "))
+		ctx.Strict("DEXPREOPT_BOOTCLASSPATH_DEX_LOCATIONS", strings.Join(image.dexLocations, " "))
 
 		var imageNames []string
 		for _, current := range append(d.otherImages, image) {
 			imageNames = append(imageNames, current.name)
-			for _, current := range current.variants {
-				sfx := current.name + "_" + current.target.Arch.ArchType.String()
-				ctx.Strict("DEXPREOPT_IMAGE_VDEX_BUILT_INSTALLED_"+sfx, current.vdexInstalls.String())
-				ctx.Strict("DEXPREOPT_IMAGE_"+sfx, current.images.String())
-				ctx.Strict("DEXPREOPT_IMAGE_DEPS_"+sfx, strings.Join(current.imagesDeps.Strings(), " "))
-				ctx.Strict("DEXPREOPT_IMAGE_BUILT_INSTALLED_"+sfx, current.installs.String())
-				ctx.Strict("DEXPREOPT_IMAGE_UNSTRIPPED_BUILT_INSTALLED_"+sfx, current.unstrippedInstalls.String())
+			var arches []android.ArchType
+			for arch, _ := range current.images {
+				arches = append(arches, arch)
 			}
 
-			ctx.Strict("DEXPREOPT_IMAGE_LOCATIONS_"+current.name, strings.Join(current.imageLocations, ":"))
-			ctx.Strict("DEXPREOPT_IMAGE_ZIP_"+current.name, current.zip.String())
+			sort.Slice(arches, func(i, j int) bool { return arches[i].String() < arches[j].String() })
+
+			for _, arch := range arches {
+				ctx.Strict("DEXPREOPT_IMAGE_VDEX_BUILT_INSTALLED_"+current.name+"_"+arch.String(), current.vdexInstalls[arch].String())
+				ctx.Strict("DEXPREOPT_IMAGE_"+current.name+"_"+arch.String(), current.images[arch].String())
+				ctx.Strict("DEXPREOPT_IMAGE_BUILT_INSTALLED_"+current.name+"_"+arch.String(), current.installs[arch].String())
+				ctx.Strict("DEXPREOPT_IMAGE_UNSTRIPPED_BUILT_INSTALLED_"+current.name+"_"+arch.String(), current.unstrippedInstalls[arch].String())
+			}
 		}
 		ctx.Strict("DEXPREOPT_IMAGE_NAMES", strings.Join(imageNames, " "))
 	}

@@ -38,12 +38,9 @@ var (
 	ndkLibrarySuffix = ".ndk"
 
 	ndkPrebuiltSharedLibs = []string{
-		"aaudio",
-		"amidi",
 		"android",
 		"binder_ndk",
 		"c",
-		"camera2ndk",
 		"dl",
 		"EGL",
 		"GLESv1_CM",
@@ -52,9 +49,7 @@ var (
 		"jnigraphics",
 		"log",
 		"mediandk",
-		"nativewindow",
 		"m",
-		"neuralnetworks",
 		"OpenMAXAL",
 		"OpenSLES",
 		"stdc++",
@@ -96,8 +91,6 @@ type libraryProperties struct {
 	Unversioned_until *string
 
 	// Private property for use by the mutator that splits per-API level.
-	// can be one of <number:sdk_version> or <codename> or "current"
-	// passed to "gen_stub_libs.py" as it is
 	ApiLevel string `blueprint:"mutated"`
 
 	// True if this API is not yet ready to be shipped in the NDK. It will be
@@ -124,7 +117,7 @@ func intMax(a int, b int) int {
 	}
 }
 
-func normalizeNdkApiLevel(ctx android.BaseModuleContext, apiLevel string,
+func normalizeNdkApiLevel(ctx android.BaseContext, apiLevel string,
 	arch android.Arch) (string, error) {
 
 	if apiLevel == "current" {
@@ -170,7 +163,7 @@ func getFirstGeneratedVersion(firstSupportedVersion string, platformVersion int)
 	return strconv.Atoi(firstSupportedVersion)
 }
 
-func shouldUseVersionScript(ctx android.BaseModuleContext, stub *stubDecorator) (bool, error) {
+func shouldUseVersionScript(ctx android.BaseContext, stub *stubDecorator) (bool, error) {
 	// unversioned_until is normally empty, in which case we should use the version script.
 	if String(stub.properties.Unversioned_until) == "" {
 		return true, nil
@@ -230,7 +223,7 @@ func generateStubApiVariants(mctx android.BottomUpMutatorContext, c *stubDecorat
 	}
 }
 
-func NdkApiMutator(mctx android.BottomUpMutatorContext) {
+func ndkApiMutator(mctx android.BottomUpMutatorContext) {
 	if m, ok := mctx.Module().(*Module); ok {
 		if m.Enabled() {
 			if compiler, ok := m.compiler.(*stubDecorator); ok {
@@ -259,11 +252,10 @@ func (c *stubDecorator) compilerInit(ctx BaseModuleContext) {
 }
 
 func addStubLibraryCompilerFlags(flags Flags) Flags {
-	flags.Global.CFlags = append(flags.Global.CFlags,
+	flags.CFlags = append(flags.CFlags,
 		// We're knowingly doing some otherwise unsightly things with builtin
 		// functions here. We're just generating stub libraries, so ignore it.
 		"-Wno-incompatible-library-redeclaration",
-		"-Wno-incomplete-setjmp-declaration",
 		"-Wno-builtin-requires-header",
 		"-Wno-invalid-noreturn",
 		"-Wall",
@@ -272,10 +264,6 @@ func addStubLibraryCompilerFlags(flags Flags) Flags {
 		// (avoids the need to link an unwinder into a fake library).
 		"-fno-unwind-tables",
 	)
-	// All symbols in the stubs library should be visible.
-	if inList("-fvisibility=hidden", flags.Local.CFlags) {
-		flags.Local.CFlags = append(flags.Local.CFlags, "-fvisibility=default")
-	}
 	return flags
 }
 
@@ -344,8 +332,7 @@ func (stub *stubDecorator) link(ctx ModuleContext, flags Flags, deps PathDeps,
 
 	if useVersionScript {
 		linkerScriptFlag := "-Wl,--version-script," + stub.versionScriptPath.String()
-		flags.Local.LdFlags = append(flags.Local.LdFlags, linkerScriptFlag)
-		flags.LdFlagsDeps = append(flags.LdFlagsDeps, stub.versionScriptPath)
+		flags.LdFlags = append(flags.LdFlags, linkerScriptFlag)
 	}
 
 	return stub.libraryDecorator.link(ctx, flags, deps, objs)
@@ -385,19 +372,13 @@ func newStubLibrary() *Module {
 	module.linker = stub
 	module.installer = stub
 
-	module.Properties.AlwaysSdk = true
-	module.Properties.Sdk_version = StringPtr("current")
-
 	module.AddProperties(&stub.properties, &library.MutatedProperties)
 
 	return module
 }
 
-// ndk_library creates a stub library that exposes dummy implementation
-// of functions and variables for use at build time only.
-func NdkLibraryFactory() android.Module {
+func ndkLibraryFactory() android.Module {
 	module := newStubLibrary()
 	android.InitAndroidArchModule(module, android.DeviceSupported, android.MultilibBoth)
-	module.ModuleBase.EnableNativeBridgeSupportByDefault()
 	return module
 }

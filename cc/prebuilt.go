@@ -19,15 +19,9 @@ import (
 )
 
 func init() {
-	RegisterPrebuiltBuildComponents(android.InitRegistrationContext)
-}
-
-func RegisterPrebuiltBuildComponents(ctx android.RegistrationContext) {
-	ctx.RegisterModuleType("cc_prebuilt_library", PrebuiltLibraryFactory)
-	ctx.RegisterModuleType("cc_prebuilt_library_shared", PrebuiltSharedLibraryFactory)
-	ctx.RegisterModuleType("cc_prebuilt_library_static", PrebuiltStaticLibraryFactory)
-	ctx.RegisterModuleType("cc_prebuilt_object", prebuiltObjectFactory)
-	ctx.RegisterModuleType("cc_prebuilt_binary", prebuiltBinaryFactory)
+	android.RegisterModuleType("cc_prebuilt_library_shared", prebuiltSharedLibraryFactory)
+	android.RegisterModuleType("cc_prebuilt_library_static", prebuiltStaticLibraryFactory)
+	android.RegisterModuleType("cc_prebuilt_binary", prebuiltBinaryFactory)
 }
 
 type prebuiltLinkerInterface interface {
@@ -89,32 +83,22 @@ func (p *prebuiltLibraryLinker) linkerProps() []interface{} {
 
 func (p *prebuiltLibraryLinker) link(ctx ModuleContext,
 	flags Flags, deps PathDeps, objs Objects) android.Path {
-
-	p.libraryDecorator.exportIncludes(ctx)
-	p.libraryDecorator.reexportDirs(deps.ReexportedDirs...)
-	p.libraryDecorator.reexportSystemDirs(deps.ReexportedSystemDirs...)
-	p.libraryDecorator.reexportFlags(deps.ReexportedFlags...)
-	p.libraryDecorator.reexportDeps(deps.ReexportedDeps...)
-	p.libraryDecorator.addExportedGeneratedHeaders(deps.ReexportedGeneratedHeaders...)
-
 	// TODO(ccross): verify shared library dependencies
-	srcs := p.prebuiltSrcs()
-	if len(srcs) > 0 {
+	if len(p.properties.Srcs) > 0 {
+		p.libraryDecorator.exportIncludes(ctx, "-I")
+		p.libraryDecorator.reexportFlags(deps.ReexportedFlags)
+		p.libraryDecorator.reexportDeps(deps.ReexportedFlagsDeps)
+
 		builderFlags := flagsToBuilderFlags(flags)
 
-		if len(srcs) > 1 {
-			ctx.PropertyErrorf("srcs", "multiple prebuilt source files")
-			return nil
-		}
-
-		in := android.PathForModuleSrc(ctx, srcs[0])
+		in := p.Prebuilt.SingleSourcePath(ctx)
 
 		if p.shared() {
 			p.unstrippedOutputFile = in
-			libName := p.libraryDecorator.getLibName(ctx) + flags.Toolchain.ShlibSuffix()
+			libName := ctx.baseModuleName() + flags.Toolchain.ShlibSuffix()
 			if p.needsStrip(ctx) {
 				stripped := android.PathForModuleOut(ctx, "stripped", libName)
-				p.stripExecutableOrSharedLib(ctx, in, stripped, builderFlags)
+				p.strip(ctx, in, stripped, builderFlags)
 				in = stripped
 			}
 
@@ -131,18 +115,6 @@ func (p *prebuiltLibraryLinker) link(ctx ModuleContext,
 	return nil
 }
 
-func (p *prebuiltLibraryLinker) prebuiltSrcs() []string {
-	srcs := p.properties.Srcs
-	if p.static() {
-		srcs = append(srcs, p.libraryDecorator.StaticProperties.Static.Srcs...)
-	}
-	if p.shared() {
-		srcs = append(srcs, p.libraryDecorator.SharedProperties.Shared.Srcs...)
-	}
-
-	return srcs
-}
-
 func (p *prebuiltLibraryLinker) shared() bool {
 	return p.libraryDecorator.shared()
 }
@@ -155,56 +127,28 @@ func (p *prebuiltLibraryLinker) disablePrebuilt() {
 	p.properties.Srcs = nil
 }
 
-func (p *prebuiltLibraryLinker) skipInstall(mod *Module) {
-	mod.ModuleBase.SkipInstall()
+// cc_prebuilt_library_shared installs a precompiled shared library that are
+// listed in the srcs property in the device's directory.
+func prebuiltSharedLibraryFactory() android.Module {
+	module, _ := NewPrebuiltSharedLibrary(android.HostAndDeviceSupported)
+	return module.Init()
 }
 
-func NewPrebuiltLibrary(hod android.HostOrDeviceSupported) (*Module, *libraryDecorator) {
+func NewPrebuiltSharedLibrary(hod android.HostOrDeviceSupported) (*Module, *libraryDecorator) {
 	module, library := NewLibrary(hod)
+	library.BuildOnlyShared()
 	module.compiler = nil
 
 	prebuilt := &prebuiltLibraryLinker{
 		libraryDecorator: library,
 	}
 	module.linker = prebuilt
-	module.installer = prebuilt
 
 	module.AddProperties(&prebuilt.properties)
 
-	srcsSupplier := func() []string {
-		return prebuilt.prebuiltSrcs()
-	}
+	android.InitPrebuiltModule(module, &prebuilt.properties.Srcs)
 
-	android.InitPrebuiltModuleWithSrcSupplier(module, srcsSupplier, "srcs")
-
-	// Prebuilt libraries can be used in SDKs.
-	android.InitSdkAwareModule(module)
-	return module, library
-}
-
-// cc_prebuilt_library installs a precompiled shared library that are
-// listed in the srcs property in the device's directory.
-func PrebuiltLibraryFactory() android.Module {
-	module, _ := NewPrebuiltLibrary(android.HostAndDeviceSupported)
-
-	// Prebuilt shared libraries can be included in APEXes
-	android.InitApexModule(module)
-
-	return module.Init()
-}
-
-// cc_prebuilt_library_shared installs a precompiled shared library that are
-// listed in the srcs property in the device's directory.
-func PrebuiltSharedLibraryFactory() android.Module {
-	module, _ := NewPrebuiltSharedLibrary(android.HostAndDeviceSupported)
-	return module.Init()
-}
-
-func NewPrebuiltSharedLibrary(hod android.HostOrDeviceSupported) (*Module, *libraryDecorator) {
-	module, library := NewPrebuiltLibrary(hod)
-	library.BuildOnlyShared()
-
-	// Prebuilt shared libraries can be included in APEXes
+	// Prebuilt libraries can be included in APEXes
 	android.InitApexModule(module)
 
 	return module, library
@@ -212,63 +156,25 @@ func NewPrebuiltSharedLibrary(hod android.HostOrDeviceSupported) (*Module, *libr
 
 // cc_prebuilt_library_static installs a precompiled static library that are
 // listed in the srcs property in the device's directory.
-func PrebuiltStaticLibraryFactory() android.Module {
+func prebuiltStaticLibraryFactory() android.Module {
 	module, _ := NewPrebuiltStaticLibrary(android.HostAndDeviceSupported)
 	return module.Init()
 }
 
 func NewPrebuiltStaticLibrary(hod android.HostOrDeviceSupported) (*Module, *libraryDecorator) {
-	module, library := NewPrebuiltLibrary(hod)
+	module, library := NewLibrary(hod)
 	library.BuildOnlyStatic()
-	return module, library
-}
+	module.compiler = nil
 
-type prebuiltObjectProperties struct {
-	Srcs []string `android:"path,arch_variant"`
-}
-
-type prebuiltObjectLinker struct {
-	android.Prebuilt
-	objectLinker
-
-	properties prebuiltObjectProperties
-}
-
-func (p *prebuiltObjectLinker) prebuilt() *android.Prebuilt {
-	return &p.Prebuilt
-}
-
-var _ prebuiltLinkerInterface = (*prebuiltObjectLinker)(nil)
-
-func (p *prebuiltObjectLinker) link(ctx ModuleContext,
-	flags Flags, deps PathDeps, objs Objects) android.Path {
-	if len(p.properties.Srcs) > 0 {
-		return p.Prebuilt.SingleSourcePath(ctx)
-	}
-	return nil
-}
-
-func (p *prebuiltObjectLinker) object() bool {
-	return true
-}
-
-func newPrebuiltObject() *Module {
-	module := newObject()
-	prebuilt := &prebuiltObjectLinker{
-		objectLinker: objectLinker{
-			baseLinker: NewBaseLinker(nil),
-		},
+	prebuilt := &prebuiltLibraryLinker{
+		libraryDecorator: library,
 	}
 	module.linker = prebuilt
-	module.AddProperties(&prebuilt.properties)
-	android.InitPrebuiltModule(module, &prebuilt.properties.Srcs)
-	android.InitSdkAwareModule(module)
-	return module
-}
 
-func prebuiltObjectFactory() android.Module {
-	module := newPrebuiltObject()
-	return module.Init()
+	module.AddProperties(&prebuilt.properties)
+
+	android.InitPrebuiltModule(module, &prebuilt.properties.Srcs)
+	return module, library
 }
 
 type prebuiltBinaryLinker struct {
@@ -291,7 +197,7 @@ func (p *prebuiltBinaryLinker) link(ctx ModuleContext,
 
 		if p.needsStrip(ctx) {
 			stripped := android.PathForModuleOut(ctx, "stripped", fileName)
-			p.stripExecutableOrSharedLib(ctx, in, stripped, builderFlags)
+			p.strip(ctx, in, stripped, builderFlags)
 			in = stripped
 		}
 
@@ -308,10 +214,6 @@ func (p *prebuiltBinaryLinker) link(ctx ModuleContext,
 	}
 
 	return nil
-}
-
-func (p *prebuiltBinaryLinker) binary() bool {
-	return true
 }
 
 // cc_prebuilt_binary installs a precompiled executable in srcs property in the

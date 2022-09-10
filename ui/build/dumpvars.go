@@ -17,8 +17,6 @@ package build
 import (
 	"bytes"
 	"fmt"
-	"io/ioutil"
-	"os"
 	"strings"
 
 	"android/soong/ui/metrics"
@@ -42,7 +40,6 @@ func DumpMakeVars(ctx Context, config Config, goals, vars []string) (map[string]
 	soongUiVars := map[string]func() string{
 		"OUT_DIR":  func() string { return config.OutDir() },
 		"DIST_DIR": func() string { return config.DistDir() },
-		"TMPDIR":   func() string { return absPath(ctx, config.TempDir()) },
 	}
 
 	makeVars := make([]string, 0, len(vars))
@@ -54,16 +51,8 @@ func DumpMakeVars(ctx Context, config Config, goals, vars []string) (map[string]
 
 	var ret map[string]string
 	if len(makeVars) > 0 {
-		// It's not safe to use the same TMPDIR as the build, as that can be removed.
-		tmpDir, err := ioutil.TempDir("", "dumpvars")
-		if err != nil {
-			return nil, err
-		}
-		defer os.RemoveAll(tmpDir)
-
-		SetupLitePath(ctx, config, tmpDir)
-
-		ret, err = dumpMakeVars(ctx, config, goals, makeVars, false, tmpDir)
+		var err error
+		ret, err = dumpMakeVars(ctx, config, goals, makeVars, false)
 		if err != nil {
 			return ret, err
 		}
@@ -80,7 +69,7 @@ func DumpMakeVars(ctx Context, config Config, goals, vars []string) (map[string]
 	return ret, nil
 }
 
-func dumpMakeVars(ctx Context, config Config, goals, vars []string, write_soong_vars bool, tmpDir string) (map[string]string, error) {
+func dumpMakeVars(ctx Context, config Config, goals, vars []string, write_soong_vars bool) (map[string]string, error) {
 	ctx.BeginTrace(metrics.RunKati, "dumpvars")
 	defer ctx.EndTrace()
 
@@ -96,9 +85,6 @@ func dumpMakeVars(ctx Context, config Config, goals, vars []string, write_soong_
 		cmd.Environment.Set("WRITE_SOONG_VARIABLES", "true")
 	}
 	cmd.Environment.Set("DUMP_MANY_VARS", strings.Join(vars, " "))
-	if tmpDir != "" {
-		cmd.Environment.Set("TMPDIR", tmpDir)
-	}
 	cmd.Sandbox = dumpvarsSandbox
 	output := bytes.Buffer{}
 	cmd.Stdout = &output
@@ -186,7 +172,7 @@ func runMakeProductConfig(ctx Context, config Config) {
 	// Variables to export into the environment of Kati/Ninja
 	exportEnvVars := []string{
 		// So that we can use the correct TARGET_PRODUCT if it's been
-		// modified by a buildspec.mk
+		// modified by PRODUCT-*/APP-* arguments
 		"TARGET_PRODUCT",
 		"TARGET_BUILD_VARIANT",
 		"TARGET_BUILD_APPS",
@@ -194,10 +180,7 @@ func runMakeProductConfig(ctx Context, config Config) {
 		// compiler wrappers set up by make
 		"CC_WRAPPER",
 		"CXX_WRAPPER",
-		"RBE_WRAPPER",
 		"JAVAC_WRAPPER",
-		"R8_WRAPPER",
-		"D8_WRAPPER",
 
 		// ccache settings
 		"CCACHE_COMPILERCHECK",
@@ -220,53 +203,20 @@ func runMakeProductConfig(ctx Context, config Config) {
 		// Whether --werror_overriding_commands will work
 		"BUILD_BROKEN_DUP_RULES",
 
+		// Used to turn on --werror_ options in Kati
+		"BUILD_BROKEN_PHONY_TARGETS",
+
 		// Whether to enable the network during the build
 		"BUILD_BROKEN_USES_NETWORK",
 
-		// Extra environment variables to be exported to ninja
-		"BUILD_BROKEN_NINJA_USES_ENV_VARS",
-
 		// Not used, but useful to be in the soong.log
 		"BOARD_VNDK_VERSION",
-
-		"DEFAULT_WARNING_BUILD_MODULE_TYPES",
-		"DEFAULT_ERROR_BUILD_MODULE_TYPES",
-		"BUILD_BROKEN_PREBUILT_ELF_FILES",
-		"BUILD_BROKEN_TREBLE_SYSPROP_NEVERALLOW",
-		"BUILD_BROKEN_USES_BUILD_AUX_EXECUTABLE",
-		"BUILD_BROKEN_USES_BUILD_AUX_STATIC_LIBRARY",
-		"BUILD_BROKEN_USES_BUILD_COPY_HEADERS",
-		"BUILD_BROKEN_USES_BUILD_EXECUTABLE",
-		"BUILD_BROKEN_USES_BUILD_FUZZ_TEST",
-		"BUILD_BROKEN_USES_BUILD_HEADER_LIBRARY",
-		"BUILD_BROKEN_USES_BUILD_HOST_DALVIK_JAVA_LIBRARY",
-		"BUILD_BROKEN_USES_BUILD_HOST_DALVIK_STATIC_JAVA_LIBRARY",
-		"BUILD_BROKEN_USES_BUILD_HOST_EXECUTABLE",
-		"BUILD_BROKEN_USES_BUILD_HOST_FUZZ_TEST",
-		"BUILD_BROKEN_USES_BUILD_HOST_JAVA_LIBRARY",
-		"BUILD_BROKEN_USES_BUILD_HOST_NATIVE_TEST",
-		"BUILD_BROKEN_USES_BUILD_HOST_PREBUILT",
-		"BUILD_BROKEN_USES_BUILD_HOST_SHARED_LIBRARY",
-		"BUILD_BROKEN_USES_BUILD_HOST_STATIC_LIBRARY",
-		"BUILD_BROKEN_USES_BUILD_HOST_STATIC_TEST_LIBRARY",
-		"BUILD_BROKEN_USES_BUILD_HOST_TEST_CONFIG",
-		"BUILD_BROKEN_USES_BUILD_JAVA_LIBRARY",
-		"BUILD_BROKEN_USES_BUILD_MULTI_PREBUILT",
-		"BUILD_BROKEN_USES_BUILD_NATIVE_BENCHMARK",
-		"BUILD_BROKEN_USES_BUILD_NATIVE_TEST",
-		"BUILD_BROKEN_USES_BUILD_NOTICE_FILE",
-		"BUILD_BROKEN_USES_BUILD_PACKAGE",
-		"BUILD_BROKEN_USES_BUILD_PHONY_PACKAGE",
-		"BUILD_BROKEN_USES_BUILD_PREBUILT",
-		"BUILD_BROKEN_USES_BUILD_RRO_PACKAGE",
-		"BUILD_BROKEN_USES_BUILD_SHARED_LIBRARY",
-		"BUILD_BROKEN_USES_BUILD_STATIC_JAVA_LIBRARY",
-		"BUILD_BROKEN_USES_BUILD_STATIC_LIBRARY",
-		"BUILD_BROKEN_USES_BUILD_STATIC_TEST_LIBRARY",
-		"BUILD_BROKEN_USES_BUILD_TARGET_TEST_CONFIG",
+		"BUILD_BROKEN_ANDROIDMK_EXPORTS",
+		"BUILD_BROKEN_DUP_COPY_HEADERS",
+		"BUILD_BROKEN_ENG_DEBUG_TAGS",
 	}, exportEnvVars...), BannerVars...)
 
-	make_vars, err := dumpMakeVars(ctx, config, config.Arguments(), allVars, true, "")
+	make_vars, err := dumpMakeVars(ctx, config, config.Arguments(), allVars, true)
 	if err != nil {
 		ctx.Fatalln("Error dumping make vars:", err)
 	}
@@ -293,6 +243,6 @@ func runMakeProductConfig(ctx Context, config Config) {
 
 	config.SetPdkBuild(make_vars["TARGET_BUILD_PDK"] == "true")
 	config.SetBuildBrokenDupRules(make_vars["BUILD_BROKEN_DUP_RULES"] == "true")
+	config.SetBuildBrokenPhonyTargets(make_vars["BUILD_BROKEN_PHONY_TARGETS"] == "true")
 	config.SetBuildBrokenUsesNetwork(make_vars["BUILD_BROKEN_USES_NETWORK"] == "true")
-	config.SetBuildBrokenNinjaUsesEnvVars(strings.Fields(make_vars["BUILD_BROKEN_NINJA_USES_ENV_VARS"]))
 }

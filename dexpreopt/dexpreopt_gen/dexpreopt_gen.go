@@ -18,7 +18,6 @@ import (
 	"bytes"
 	"flag"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -31,17 +30,18 @@ import (
 )
 
 var (
-	dexpreoptScriptPath   = flag.String("dexpreopt_script", "", "path to output dexpreopt script")
-	globalSoongConfigPath = flag.String("global_soong", "", "path to global configuration file for settings originating from Soong")
-	globalConfigPath      = flag.String("global", "", "path to global configuration file")
-	moduleConfigPath      = flag.String("module", "", "path to module configuration file")
-	outDir                = flag.String("out_dir", "", "path to output directory")
+	dexpreoptScriptPath = flag.String("dexpreopt_script", "", "path to output dexpreopt script")
+	stripScriptPath     = flag.String("strip_script", "", "path to output strip script")
+	globalConfigPath    = flag.String("global", "", "path to global configuration file")
+	moduleConfigPath    = flag.String("module", "", "path to module configuration file")
+	outDir              = flag.String("out_dir", "", "path to output directory")
 )
 
 type pathContext struct {
 	config android.Config
 }
 
+func (x *pathContext) Fs() pathtools.FileSystem   { return pathtools.OsFs }
 func (x *pathContext) Config() android.Config     { return x.config }
 func (x *pathContext) AddNinjaFileDeps(...string) {}
 
@@ -64,55 +64,35 @@ func main() {
 		usage("path to output dexpreopt script is required")
 	}
 
-	if *globalSoongConfigPath == "" {
-		usage("--global_soong configuration file is required")
+	if *stripScriptPath == "" {
+		usage("path to output strip script is required")
 	}
 
 	if *globalConfigPath == "" {
-		usage("--global configuration file is required")
+		usage("path to global configuration file is required")
 	}
 
 	if *moduleConfigPath == "" {
-		usage("--module configuration file is required")
+		usage("path to module configuration file is required")
 	}
 
-	ctx := &pathContext{android.NullConfig(*outDir)}
+	ctx := &pathContext{android.TestConfig(*outDir, nil)}
 
-	globalSoongConfigData, err := ioutil.ReadFile(*globalSoongConfigPath)
+	globalConfig, err := dexpreopt.LoadGlobalConfig(ctx, *globalConfigPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error reading global Soong config %q: %s\n", *globalSoongConfigPath, err)
+		fmt.Fprintf(os.Stderr, "error loading global config %q: %s\n", *globalConfigPath, err)
 		os.Exit(2)
 	}
 
-	globalSoongConfig, err := dexpreopt.ParseGlobalSoongConfig(ctx, globalSoongConfigData)
+	moduleConfig, err := dexpreopt.LoadModuleConfig(ctx, *moduleConfigPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error parsing global Soong config %q: %s\n", *globalSoongConfigPath, err)
+		fmt.Fprintf(os.Stderr, "error loading module config %q: %s\n", *moduleConfigPath, err)
 		os.Exit(2)
 	}
 
-	globalConfigData, err := ioutil.ReadFile(*globalConfigPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error reading global config %q: %s\n", *globalConfigPath, err)
-		os.Exit(2)
-	}
-
-	globalConfig, err := dexpreopt.ParseGlobalConfig(ctx, globalConfigData)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error parsing global config %q: %s\n", *globalConfigPath, err)
-		os.Exit(2)
-	}
-
-	moduleConfigData, err := ioutil.ReadFile(*moduleConfigPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error reading module config %q: %s\n", *moduleConfigPath, err)
-		os.Exit(2)
-	}
-
-	moduleConfig, err := dexpreopt.ParseModuleConfig(ctx, moduleConfigData)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error parsing module config %q: %s\n", *moduleConfigPath, err)
-		os.Exit(2)
-	}
+	// This shouldn't be using *PathForTesting, but it's outside of soong_build so its OK for now.
+	moduleConfig.StripInputPath = android.PathForTesting("$1")
+	moduleConfig.StripOutputPath = android.WritablePathForTesting("$2")
 
 	moduleConfig.DexPath = android.PathForTesting("$1")
 
@@ -130,12 +110,12 @@ func main() {
 		}
 	}()
 
-	writeScripts(ctx, globalSoongConfig, globalConfig, moduleConfig, *dexpreoptScriptPath)
+	writeScripts(ctx, globalConfig, moduleConfig, *dexpreoptScriptPath, *stripScriptPath)
 }
 
-func writeScripts(ctx android.PathContext, globalSoong *dexpreopt.GlobalSoongConfig,
-	global *dexpreopt.GlobalConfig, module *dexpreopt.ModuleConfig, dexpreoptScriptPath string) {
-	dexpreoptRule, err := dexpreopt.GenerateDexpreoptRule(ctx, globalSoong, global, module)
+func writeScripts(ctx android.PathContext, global dexpreopt.GlobalConfig, module dexpreopt.ModuleConfig,
+	dexpreoptScriptPath, stripScriptPath string) {
+	dexpreoptRule, err := dexpreopt.GenerateDexpreoptRule(ctx, global, module)
 	if err != nil {
 		panic(err)
 	}
@@ -150,10 +130,15 @@ func writeScripts(ctx android.PathContext, globalSoong *dexpreopt.GlobalSoongCon
 		dexpreoptRule.Command().Text("mkdir -p").Flag(filepath.Dir(installPath.String()))
 		dexpreoptRule.Command().Text("cp -f").Input(install.From).Output(installPath)
 	}
-	dexpreoptRule.Command().Tool(globalSoong.SoongZip).
+	dexpreoptRule.Command().Tool(global.Tools.SoongZip).
 		FlagWithArg("-o ", "$2").
 		FlagWithArg("-C ", installDir.String()).
 		FlagWithArg("-D ", installDir.String())
+
+	stripRule, err := dexpreopt.GenerateStripRule(global, module)
+	if err != nil {
+		panic(err)
+	}
 
 	write := func(rule *android.RuleBuilder, file string) {
 		script := &bytes.Buffer{}
@@ -195,8 +180,15 @@ func writeScripts(ctx android.PathContext, globalSoong *dexpreopt.GlobalSoongCon
 	if module.DexPath.String() != "$1" {
 		panic(fmt.Errorf("module.DexPath must be '$1', was %q", module.DexPath))
 	}
+	if module.StripInputPath.String() != "$1" {
+		panic(fmt.Errorf("module.StripInputPath must be '$1', was %q", module.StripInputPath))
+	}
+	if module.StripOutputPath.String() != "$2" {
+		panic(fmt.Errorf("module.StripOutputPath must be '$2', was %q", module.StripOutputPath))
+	}
 
 	write(dexpreoptRule, dexpreoptScriptPath)
+	write(stripRule, stripScriptPath)
 }
 
 const scriptHeader = `#!/bin/bash

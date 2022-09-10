@@ -27,7 +27,7 @@ import (
 var String = proptools.String
 
 func init() {
-	android.RegisterModuleType("apex_key", ApexKeyFactory)
+	android.RegisterModuleType("apex_key", apexKeyFactory)
 	android.RegisterSingletonType("apex_keys_text", apexKeysTextFactory)
 }
 
@@ -53,10 +53,11 @@ type apexKeyProperties struct {
 	Installable *bool
 }
 
-func ApexKeyFactory() android.Module {
+func apexKeyFactory() android.Module {
 	module := &apexKey{}
 	module.AddProperties(&module.properties)
-	android.InitAndroidArchModule(module, android.HostAndDeviceDefault, android.MultilibCommon)
+	// This module is device-only
+	android.InitAndroidArchModule(module, android.DeviceSupported, android.MultilibCommon)
 	return module
 }
 
@@ -106,36 +107,10 @@ type apexKeysText struct {
 
 func (s *apexKeysText) GenerateBuildActions(ctx android.SingletonContext) {
 	s.output = android.PathForOutput(ctx, "apexkeys.txt")
-	type apexKeyEntry struct {
-		name                  string
-		presigned             bool
-		public_key            string
-		private_key           string
-		container_certificate string
-		container_private_key string
-		partition             string
-	}
-	toString := func(e apexKeyEntry) string {
-		format := "name=%q public_key=%q private_key=%q container_certificate=%q container_private_key=%q partition=%q\\n"
-		if e.presigned {
-			return fmt.Sprintf(format, e.name, "PRESIGNED", "PRESIGNED", "PRESIGNED", "PRESIGNED", e.partition)
-		} else {
-			return fmt.Sprintf(format, e.name, e.public_key, e.private_key, e.container_certificate, e.container_private_key, e.partition)
-		}
-	}
-
-	apexKeyMap := make(map[string]apexKeyEntry)
+	apexModulesMap := make(map[string]android.Module)
 	ctx.VisitAllModules(func(module android.Module) {
 		if m, ok := module.(*apexBundle); ok && m.Enabled() && m.installable() {
-			apexKeyMap[m.Name()] = apexKeyEntry{
-				name:                  m.Name() + ".apex",
-				presigned:             false,
-				public_key:            m.public_key_file.String(),
-				private_key:           m.private_key_file.String(),
-				container_certificate: m.container_certificate_file.String(),
-				container_private_key: m.container_private_key_file.String(),
-				partition:             m.PartitionTag(ctx.DeviceConfig()),
-			}
+			apexModulesMap[m.Name()] = m
 		}
 	})
 
@@ -143,37 +118,34 @@ func (s *apexKeysText) GenerateBuildActions(ctx android.SingletonContext) {
 	ctx.VisitAllModules(func(module android.Module) {
 		if m, ok := module.(*Prebuilt); ok && m.Enabled() && m.installable() &&
 			m.Prebuilt().UsePrebuilt() {
-			apexKeyMap[m.BaseModuleName()] = apexKeyEntry{
-				name:      m.InstallFilename(),
-				presigned: true,
-				partition: m.PartitionTag(ctx.DeviceConfig()),
-			}
-		}
-	})
-
-	// Find apex_set and let them override apexBundle or prebuilts. This is done in a separate pass
-	// so that apex_set are not overridden by prebuilts.
-	ctx.VisitAllModules(func(module android.Module) {
-		if m, ok := module.(*ApexSet); ok && m.Enabled() {
-			entry := apexKeyEntry{
-				name:      m.InstallFilename(),
-				presigned: true,
-				partition: m.PartitionTag(ctx.DeviceConfig()),
-			}
-			apexKeyMap[m.BaseModuleName()] = entry
+			apexModulesMap[m.BaseModuleName()] = m
 		}
 	})
 
 	// iterating over map does not give consistent ordering in golang
 	var moduleNames []string
-	for key, _ := range apexKeyMap {
+	for key, _ := range apexModulesMap {
 		moduleNames = append(moduleNames, key)
 	}
 	sort.Strings(moduleNames)
 
 	var filecontent strings.Builder
-	for _, name := range moduleNames {
-		fmt.Fprintf(&filecontent, "%s", toString(apexKeyMap[name]))
+	for _, key := range moduleNames {
+		module := apexModulesMap[key]
+		if m, ok := module.(*apexBundle); ok {
+			fmt.Fprintf(&filecontent,
+				"name=%q public_key=%q private_key=%q container_certificate=%q container_private_key=%q\\n",
+				m.Name()+".apex",
+				m.public_key_file.String(),
+				m.private_key_file.String(),
+				m.container_certificate_file.String(),
+				m.container_private_key_file.String())
+		} else if m, ok := module.(*Prebuilt); ok {
+			fmt.Fprintf(&filecontent,
+				"name=%q public_key=%q private_key=%q container_certificate=%q container_private_key=%q\\n",
+				m.InstallFilename(),
+				"PRESIGNED", "PRESIGNED", "PRESIGNED", "PRESIGNED")
+		}
 	}
 
 	ctx.Build(pctx, android.BuildParams{

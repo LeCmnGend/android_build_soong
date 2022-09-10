@@ -31,7 +31,6 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
-	"strconv"
 	"syscall"
 )
 
@@ -81,11 +80,10 @@ func Main(out io.Writer, name string, args []string) (int, error) {
 
 	pw.Close()
 
-	proc := processor{}
 	// Process subprocess stdout asynchronously
 	errCh := make(chan error)
 	go func() {
-		errCh <- proc.process(pr, out)
+		errCh <- process(pr, out)
 	}()
 
 	// Wait for subprocess to finish
@@ -119,18 +117,14 @@ func Main(out io.Writer, name string, args []string) (int, error) {
 	return 0, nil
 }
 
-type processor struct {
-	silencedWarnings int
-}
-
-func (proc *processor) process(r io.Reader, w io.Writer) error {
+func process(r io.Reader, w io.Writer) error {
 	scanner := bufio.NewScanner(r)
 	// Some javac wrappers output the entire list of java files being
 	// compiled on a single line, which can be very large, set the maximum
 	// buffer size to 2MB.
 	scanner.Buffer(nil, 2*1024*1024)
 	for scanner.Scan() {
-		proc.processLine(w, scanner.Text())
+		processLine(w, scanner.Text())
 	}
 	err := scanner.Err()
 	if err != nil {
@@ -139,30 +133,10 @@ func (proc *processor) process(r io.Reader, w io.Writer) error {
 	return nil
 }
 
-func (proc *processor) processLine(w io.Writer, line string) {
-	for _, f := range warningFilters {
-		if f.MatchString(line) {
-			proc.silencedWarnings++
-			return
-		}
-	}
+func processLine(w io.Writer, line string) {
 	for _, f := range filters {
 		if f.MatchString(line) {
 			return
-		}
-	}
-	if match := warningCount.FindStringSubmatch(line); match != nil {
-		c, err := strconv.Atoi(match[1])
-		if err == nil {
-			c -= proc.silencedWarnings
-			if c == 0 {
-				return
-			} else {
-				line = fmt.Sprintf("%d warning", c)
-				if c > 1 {
-					line += "s"
-				}
-			}
 		}
 	}
 	for _, p := range colorPatterns {
@@ -196,17 +170,12 @@ var colorPatterns = []struct {
 	{markerRe, green},
 }
 
-var warningCount = regexp.MustCompile(`^([0-9]+) warning(s)?$`)
-
-var warningFilters = []*regexp.Regexp{
-	regexp.MustCompile(`bootstrap class path not set in conjunction with -source`),
-}
-
 var filters = []*regexp.Regexp{
 	regexp.MustCompile(`Note: (Some input files|.*\.java) uses? or overrides? a deprecated API.`),
 	regexp.MustCompile(`Note: Recompile with -Xlint:deprecation for details.`),
 	regexp.MustCompile(`Note: (Some input files|.*\.java) uses? unchecked or unsafe operations.`),
 	regexp.MustCompile(`Note: Recompile with -Xlint:unchecked for details.`),
+	regexp.MustCompile(`bootstrap class path not set in conjunction with -source`),
 
 	regexp.MustCompile(`javadoc: warning - The old Doclet and Taglet APIs in the packages`),
 	regexp.MustCompile(`com.sun.javadoc, com.sun.tools.doclets and their implementations`),

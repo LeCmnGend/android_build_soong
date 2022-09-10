@@ -15,15 +15,27 @@
 package android
 
 import (
+	"io/ioutil"
+	"os"
 	"testing"
 )
 
 func testVtsConfig(test *testing.T, bpFileContents string) *TestContext {
-	config := TestArchConfig(buildDir, nil, bpFileContents, nil)
+	buildDir, err := ioutil.TempDir("", "soong_vts_config_test")
+	if err != nil {
+		test.Fatal(err)
+	}
+
+	config := TestArchConfig(buildDir, nil)
+	defer func() { os.RemoveAll(buildDir) }()
 
 	ctx := NewTestArchContext()
-	ctx.RegisterModuleType("vts_config", VtsConfigFactory)
-	ctx.Register(config)
+	ctx.RegisterModuleType("vts_config", ModuleFactoryAdaptor(VtsConfigFactory))
+	ctx.Register()
+	mockFiles := map[string][]byte{
+		"Android.bp": []byte(bpFileContents),
+	}
+	ctx.MockFileSystem(mockFiles)
 	_, errs := ctx.ParseFileList(".", []string{"Android.bp"})
 	FailIfErrored(test, errs)
 	_, errs = ctx.PrepareBuildActions(config)

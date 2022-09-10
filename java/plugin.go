@@ -24,8 +24,10 @@ func init() {
 func PluginFactory() android.Module {
 	module := &Plugin{}
 
-	module.addHostProperties()
-	module.AddProperties(&module.pluginProperties)
+	module.AddProperties(
+		&module.Module.properties,
+		&module.Module.protoProperties,
+		&module.pluginProperties)
 
 	InitJavaModule(module, android.HostSupported)
 	return module

@@ -26,16 +26,6 @@ import (
 
 func init() {
 	android.RegisterModuleType("cc_object", ObjectFactory)
-	android.RegisterSdkMemberType(ccObjectSdkMemberType)
-}
-
-var ccObjectSdkMemberType = &librarySdkMemberType{
-	SdkMemberTypeBase: android.SdkMemberTypeBase{
-		PropertyName: "native_objects",
-		SupportsSdk:  true,
-	},
-	prebuiltModuleType: "cc_prebuilt_object",
-	linkTypes:          nil,
 }
 
 type objectLinker struct {
@@ -43,41 +33,20 @@ type objectLinker struct {
 	Properties ObjectLinkerProperties
 }
 
-type ObjectLinkerProperties struct {
-	// list of modules that should only provide headers for this module.
-	Header_libs []string `android:"arch_variant,variant_prepend"`
-
-	// names of other cc_object modules to link into this module using partial linking
-	Objs []string `android:"arch_variant"`
-
-	// if set, add an extra objcopy --prefix-symbols= step
-	Prefix_symbols *string
-
-	// if set, the path to a linker script to pass to ld -r when combining multiple object files.
-	Linker_script *string `android:"path,arch_variant"`
-}
-
-func newObject() *Module {
-	module := newBaseModule(android.HostAndDeviceSupported, android.MultilibBoth)
-	module.sanitize = &sanitize{}
-	module.stl = &stl{}
-	return module
-}
-
 // cc_object runs the compiler without running the linker. It is rarely
 // necessary, but sometimes used to generate .s files from .c files to use as
 // input to a cc_genrule module.
 func ObjectFactory() android.Module {
-	module := newObject()
+	module := newBaseModule(android.HostAndDeviceSupported, android.MultilibBoth)
 	module.linker = &objectLinker{
-		baseLinker: NewBaseLinker(module.sanitize),
+		baseLinker: NewBaseLinker(nil),
 	}
 	module.compiler = NewBaseCompiler()
 
 	// Clang's address-significance tables are incompatible with ld -r.
 	module.compiler.appendCflags([]string{"-fno-addrsig"})
 
-	module.sdkMemberTypes = []android.SdkMemberType{ccObjectSdkMemberType}
+	module.stl = &stl{}
 	return module.Init()
 }
 
@@ -97,18 +66,13 @@ func (object *objectLinker) linkerDeps(ctx DepsContext, deps Deps) Deps {
 		deps.LateSharedLibs = append(deps.LateSharedLibs, "libc")
 	}
 
-	deps.HeaderLibs = append(deps.HeaderLibs, object.Properties.Header_libs...)
 	deps.ObjFiles = append(deps.ObjFiles, object.Properties.Objs...)
 	return deps
 }
 
-func (object *objectLinker) linkerFlags(ctx ModuleContext, flags Flags) Flags {
-	flags.Global.LdFlags = append(flags.Global.LdFlags, ctx.toolchain().ToolchainClangLdflags())
+func (*objectLinker) linkerFlags(ctx ModuleContext, flags Flags) Flags {
+	flags.LdFlags = append(flags.LdFlags, ctx.toolchain().ToolchainClangLdflags())
 
-	if lds := android.OptionalPathForModuleSrc(ctx, object.Properties.Linker_script); lds.Valid() {
-		flags.Local.LdFlags = append(flags.Local.LdFlags, "-Wl,-T,"+lds.String())
-		flags.LdFlagsDeps = append(flags.LdFlagsDeps, lds.Path())
-	}
 	return flags
 }
 
@@ -120,7 +84,7 @@ func (object *objectLinker) link(ctx ModuleContext,
 	var outputFile android.Path
 	builderFlags := flagsToBuilderFlags(flags)
 
-	if len(objs.objFiles) == 1 && String(object.Properties.Linker_script) == "" {
+	if len(objs.objFiles) == 1 {
 		outputFile = objs.objFiles[0]
 
 		if String(object.Properties.Prefix_symbols) != "" {
@@ -140,7 +104,7 @@ func (object *objectLinker) link(ctx ModuleContext,
 			output = input
 		}
 
-		TransformObjsToObj(ctx, objs.objFiles, builderFlags, output, flags.LdFlagsDeps)
+		TransformObjsToObj(ctx, objs.objFiles, builderFlags, output)
 	}
 
 	ctx.CheckbuildFile(outputFile)
@@ -157,8 +121,4 @@ func (object *objectLinker) nativeCoverage() bool {
 
 func (object *objectLinker) coverageOutputFilePath() android.OptionalPath {
 	return android.OptionalPath{}
-}
-
-func (object *objectLinker) object() bool {
-	return true
 }

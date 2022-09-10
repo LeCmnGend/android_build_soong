@@ -45,88 +45,66 @@ func Reformat(input string) (string, error) {
 // A FixRequest specifies the details of which fixes to apply to an individual file
 // A FixRequest doesn't specify whether to do a dry run or where to write the results; that's in cmd/bpfix.go
 type FixRequest struct {
-	steps []FixStep
-}
-type FixStepsExtension struct {
-	Name  string
-	Steps []FixStep
+	steps []fixStep
 }
 
-type FixStep struct {
-	Name string
-	Fix  func(f *Fixer) error
+type fixStep struct {
+	name string
+	fix  func(f *Fixer) error
 }
 
-var fixStepsExtensions = []*FixStepsExtension(nil)
-
-func RegisterFixStepExtension(extension *FixStepsExtension) {
-	fixStepsExtensions = append(fixStepsExtensions, extension)
-}
-
-var fixSteps = []FixStep{
+var fixSteps = []fixStep{
 	{
-		Name: "simplifyKnownRedundantVariables",
-		Fix:  runPatchListMod(simplifyKnownPropertiesDuplicatingEachOther),
+		name: "simplifyKnownRedundantVariables",
+		fix:  runPatchListMod(simplifyKnownPropertiesDuplicatingEachOther),
 	},
 	{
-		Name: "rewriteIncorrectAndroidmkPrebuilts",
-		Fix:  rewriteIncorrectAndroidmkPrebuilts,
+		name: "rewriteIncorrectAndroidmkPrebuilts",
+		fix:  rewriteIncorrectAndroidmkPrebuilts,
 	},
 	{
-		Name: "rewriteCtsModuleTypes",
-		Fix:  rewriteCtsModuleTypes,
+		name: "rewriteCtsModuleTypes",
+		fix:  rewriteCtsModuleTypes,
 	},
 	{
-		Name: "rewriteIncorrectAndroidmkAndroidLibraries",
-		Fix:  rewriteIncorrectAndroidmkAndroidLibraries,
+		name: "rewriteIncorrectAndroidmkAndroidLibraries",
+		fix:  rewriteIncorrectAndroidmkAndroidLibraries,
 	},
 	{
-		Name: "rewriteTestModuleTypes",
-		Fix:  rewriteTestModuleTypes,
+		name: "rewriteTestModuleTypes",
+		fix:  rewriteTestModuleTypes,
 	},
 	{
-		Name: "rewriteAndroidmkJavaLibs",
-		Fix:  rewriteAndroidmkJavaLibs,
+		name: "rewriteAndroidmkJavaLibs",
+		fix:  rewriteAndroidmkJavaLibs,
 	},
 	{
-		Name: "rewriteJavaStaticLibs",
-		Fix:  rewriteJavaStaticLibs,
+		name: "rewriteJavaStaticLibs",
+		fix:  rewriteJavaStaticLibs,
 	},
 	{
-		Name: "rewritePrebuiltEtc",
-		Fix:  rewriteAndroidmkPrebuiltEtc,
+		name: "rewritePrebuiltEtc",
+		fix:  rewriteAndroidmkPrebuiltEtc,
 	},
 	{
-		Name: "mergeMatchingModuleProperties",
-		Fix:  runPatchListMod(mergeMatchingModuleProperties),
+		name: "mergeMatchingModuleProperties",
+		fix:  runPatchListMod(mergeMatchingModuleProperties),
 	},
 	{
-		Name: "reorderCommonProperties",
-		Fix:  runPatchListMod(reorderCommonProperties),
+		name: "reorderCommonProperties",
+		fix:  runPatchListMod(reorderCommonProperties),
 	},
 	{
-		Name: "removeTags",
-		Fix:  runPatchListMod(removeTags),
+		name: "removeTags",
+		fix:  runPatchListMod(removeTags),
 	},
 	{
-		Name: "rewriteAndroidTest",
-		Fix:  rewriteAndroidTest,
+		name: "rewriteAndroidTest",
+		fix:  rewriteAndroidTest,
 	},
 	{
-		Name: "rewriteAndroidAppImport",
-		Fix:  rewriteAndroidAppImport,
-	},
-	{
-		Name: "removeEmptyLibDependencies",
-		Fix:  removeEmptyLibDependencies,
-	},
-	{
-		Name: "removeHidlInterfaceTypes",
-		Fix:  removeHidlInterfaceTypes,
-	},
-	{
-		Name: "removeSoongConfigBoolVariable",
-		Fix:  removeSoongConfigBoolVariable,
+		name: "rewriteAndroidAppImport",
+		fix:  rewriteAndroidAppImport,
 	},
 }
 
@@ -135,36 +113,13 @@ func NewFixRequest() FixRequest {
 }
 
 func (r FixRequest) AddAll() (result FixRequest) {
-	result.steps = append([]FixStep(nil), r.steps...)
+	result.steps = append([]fixStep(nil), r.steps...)
 	result.steps = append(result.steps, fixSteps...)
-	for _, extension := range fixStepsExtensions {
-		result.steps = append(result.steps, extension.Steps...)
-	}
-	return result
-}
-
-func (r FixRequest) AddBase() (result FixRequest) {
-	result.steps = append([]FixStep(nil), r.steps...)
-	result.steps = append(result.steps, fixSteps...)
-	return result
-}
-
-func (r FixRequest) AddMatchingExtensions(pattern string) (result FixRequest) {
-	result.steps = append([]FixStep(nil), r.steps...)
-	for _, extension := range fixStepsExtensions {
-		if match, _ := filepath.Match(pattern, extension.Name); match {
-			result.steps = append(result.steps, extension.Steps...)
-		}
-	}
 	return result
 }
 
 type Fixer struct {
 	tree *parser.File
-}
-
-func (f Fixer) Tree() *parser.File {
-	return f.tree
 }
 
 func NewFixer(tree *parser.File) *Fixer {
@@ -243,7 +198,7 @@ func parse(name string, r io.Reader) (*parser.File, error) {
 
 func (f *Fixer) fixTreeOnce(config FixRequest) error {
 	for _, fix := range config.steps {
-		err := fix.Fix(f)
+		err := fix.fix(f)
 		if err != nil {
 			return err
 		}
@@ -480,6 +435,14 @@ func getStringProperty(prop *parser.Property, fieldName string) string {
 	return ""
 }
 
+// Create sub_dir: attribute for the given path
+func makePrebuiltEtcDestination(mod *parser.Module, path string) {
+	mod.Properties = append(mod.Properties, &parser.Property{
+		Name:  "sub_dir",
+		Value: &parser.String{Value: path},
+	})
+}
+
 // Set the value of the given attribute to the error message
 func indicateAttributeError(mod *parser.Module, attributeName string, format string, a ...interface{}) error {
 	msg := fmt.Sprintf(format, a...)
@@ -505,63 +468,25 @@ func resolveLocalModule(mod *parser.Module, val parser.Expression) parser.Expres
 	return val
 }
 
-// etcPrebuiltModuleUpdate contains information on updating certain parts of a defined module such as:
-//    * changing the module type from prebuilt_etc to a different one
-//    * stripping the prefix of the install path based on the module type
-//    * appending additional boolean properties to the prebuilt module
-type etcPrebuiltModuleUpdate struct {
-	// The prefix of the install path defined in local_module_path. The prefix is removed from local_module_path
-	// before setting the 'filename' attribute.
+// A prefix to strip before setting 'filename' attribute and an array of boolean attributes to set.
+type filenamePrefixToFlags struct {
 	prefix string
-
-	// There is only one prebuilt module type in makefiles. In Soong, there are multiple versions  of
-	// prebuilts based on local_module_path. By default, it is "prebuilt_etc" if modType is blank. An
-	// example is if the local_module_path contains $(TARGET_OUT)/usr/share, the module type is
-	// considered as prebuilt_usr_share.
-	modType string
-
-	// Additional boolean attributes to be added in the prebuilt module. Each added boolean attribute
-	// has a value of true.
-	flags []string
+	flags  []string
 }
 
-func (f etcPrebuiltModuleUpdate) update(m *parser.Module, path string) bool {
-	updated := false
-	if path == f.prefix {
-		updated = true
-	} else if trimmedPath := strings.TrimPrefix(path, f.prefix+"/"); trimmedPath != path {
-		m.Properties = append(m.Properties, &parser.Property{
-			Name:  "sub_dir",
-			Value: &parser.String{Value: trimmedPath},
-		})
-		updated = true
-	}
-	if updated {
-		for _, flag := range f.flags {
-			m.Properties = append(m.Properties, &parser.Property{Name: flag, Value: &parser.Bool{Value: true, Token: "true"}})
-		}
-		if f.modType != "" {
-			m.Type = f.modType
-		}
-	}
-	return updated
-}
-
-var localModuleUpdate = map[string][]etcPrebuiltModuleUpdate{
-	"HOST_OUT":    {{prefix: "/etc", modType: "prebuilt_etc_host"}, {prefix: "/usr/share", modType: "prebuilt_usr_share_host"}},
-	"PRODUCT_OUT": {{prefix: "/system/etc"}, {prefix: "/vendor/etc", flags: []string{"proprietary"}}},
-	"TARGET_OUT": {{prefix: "/usr/share", modType: "prebuilt_usr_share"}, {prefix: "/fonts", modType: "prebuilt_font"},
-		{prefix: "/etc/firmware", modType: "prebuilt_firmware"}, {prefix: "/vendor/firmware", modType: "prebuilt_firmware", flags: []string{"proprietary"}},
-		{prefix: "/etc"}},
-	"TARGET_OUT_ETC":            {{prefix: "/firmware", modType: "prebuilt_firmware"}, {prefix: ""}},
-	"TARGET_OUT_PRODUCT":        {{prefix: "/etc", flags: []string{"product_specific"}}, {prefix: "/fonts", modType: "prebuilt_font", flags: []string{"product_specific"}}},
-	"TARGET_OUT_PRODUCT_ETC":    {{prefix: "", flags: []string{"product_specific"}}},
-	"TARGET_OUT_ODM":            {{prefix: "/etc", flags: []string{"device_specific"}}},
-	"TARGET_OUT_SYSTEM_EXT":     {{prefix: "/etc", flags: []string{"system_ext_specific"}}},
-	"TARGET_OUT_SYSTEM_EXT_ETC": {{prefix: "", flags: []string{"system_ext_specific"}}},
-	"TARGET_OUT_VENDOR":         {{prefix: "/etc", flags: []string{"proprietary"}}, {prefix: "/firmware", modType: "prebuilt_firmware", flags: []string{"proprietary"}}},
-	"TARGET_OUT_VENDOR_ETC":     {{prefix: "", flags: []string{"proprietary"}}},
-	"TARGET_RECOVERY_ROOT_OUT":  {{prefix: "/system/etc", flags: []string{"recovery"}}},
+var localModulePathRewrite = map[string][]filenamePrefixToFlags{
+	"HOST_OUT":                        {{prefix: "/etc"}},
+	"PRODUCT_OUT":                     {{prefix: "/system/etc"}, {prefix: "/vendor/etc", flags: []string{"proprietary"}}},
+	"TARGET_OUT":                      {{prefix: "/etc"}},
+	"TARGET_OUT_ETC":                  {{prefix: ""}},
+	"TARGET_OUT_PRODUCT":              {{prefix: "/etc", flags: []string{"product_specific"}}},
+	"TARGET_OUT_PRODUCT_ETC":          {{prefix: "", flags: []string{"product_specific"}}},
+	"TARGET_OUT_ODM":                  {{prefix: "/etc", flags: []string{"device_specific"}}},
+	"TARGET_OUT_PRODUCT_SERVICES":     {{prefix: "/etc", flags: []string{"product_services_specific"}}},
+	"TARGET_OUT_PRODUCT_SERVICES_ETC": {{prefix: "", flags: []string{"product_services_specific"}}},
+	"TARGET_OUT_VENDOR":               {{prefix: "/etc", flags: []string{"proprietary"}}},
+	"TARGET_OUT_VENDOR_ETC":           {{prefix: "", flags: []string{"proprietary"}}},
+	"TARGET_RECOVERY_ROOT_OUT":        {{prefix: "/system/etc", flags: []string{"recovery"}}},
 }
 
 // rewriteAndroidPrebuiltEtc fixes prebuilt_etc rule
@@ -586,22 +511,36 @@ func rewriteAndroidmkPrebuiltEtc(f *Fixer) error {
 		if prop_local_module_path, ok := mod.GetProperty(local_module_path); ok {
 			removeProperty(mod, local_module_path)
 			prefixVariableName := getStringProperty(prop_local_module_path, "var")
-			if moduleUpdates, ok := localModuleUpdate[prefixVariableName]; ok {
-				path := getStringProperty(prop_local_module_path, "fixed")
-				updated := false
-				for i := 0; i < len(moduleUpdates) && !updated; i++ {
-					updated = moduleUpdates[i].update(mod, path)
+			path := getStringProperty(prop_local_module_path, "fixed")
+			if prefixRewrites, ok := localModulePathRewrite[prefixVariableName]; ok {
+				rewritten := false
+				for _, prefixRewrite := range prefixRewrites {
+					if path == prefixRewrite.prefix {
+						rewritten = true
+					} else if trimmedPath := strings.TrimPrefix(path, prefixRewrite.prefix+"/"); trimmedPath != path {
+						makePrebuiltEtcDestination(mod, trimmedPath)
+						rewritten = true
+					}
+					if rewritten {
+						for _, flag := range prefixRewrite.flags {
+							mod.Properties = append(mod.Properties, &parser.Property{Name: flag, Value: &parser.Bool{Value: true, Token: "true"}})
+						}
+						break
+					}
 				}
-				if !updated {
+				if !rewritten {
 					expectedPrefices := ""
 					sep := ""
-					for _, moduleUpdate := range moduleUpdates {
+					for _, prefixRewrite := range prefixRewrites {
 						expectedPrefices += sep
 						sep = ", "
-						expectedPrefices += moduleUpdate.prefix
+						expectedPrefices += prefixRewrite.prefix
 					}
 					return indicateAttributeError(mod, "filename",
 						"LOCAL_MODULE_PATH value under $(%s) should start with %s", prefixVariableName, expectedPrefices)
+				}
+				if prefixVariableName == "HOST_OUT" {
+					mod.Type = "prebuilt_etc_host"
 				}
 			} else {
 				return indicateAttributeError(mod, "filename", "Cannot handle $(%s) for the prebuilt_etc", prefixVariableName)
@@ -659,134 +598,6 @@ func rewriteAndroidAppImport(f *Fixer) error {
 			}
 		}
 	}
-	return nil
-}
-
-// Removes library dependencies which are empty (and restricted from usage in Soong)
-func removeEmptyLibDependencies(f *Fixer) error {
-	emptyLibraries := []string{
-		"libhidltransport",
-		"libhwbinder",
-	}
-	relevantFields := []string{
-		"export_shared_lib_headers",
-		"export_static_lib_headers",
-		"static_libs",
-		"whole_static_libs",
-		"shared_libs",
-	}
-	for _, def := range f.tree.Defs {
-		mod, ok := def.(*parser.Module)
-		if !ok {
-			continue
-		}
-		for _, field := range relevantFields {
-			listValue, ok := getLiteralListProperty(mod, field)
-			if !ok {
-				continue
-			}
-			newValues := []parser.Expression{}
-			for _, v := range listValue.Values {
-				stringValue, ok := v.(*parser.String)
-				if !ok {
-					return fmt.Errorf("Expecting string for %s.%s fields", mod.Type, field)
-				}
-				if inList(stringValue.Value, emptyLibraries) {
-					continue
-				}
-				newValues = append(newValues, stringValue)
-			}
-			if len(newValues) == 0 && len(listValue.Values) != 0 {
-				removeProperty(mod, field)
-			} else {
-				listValue.Values = newValues
-			}
-		}
-	}
-	return nil
-}
-
-// Removes hidl_interface 'types' which are no longer needed
-func removeHidlInterfaceTypes(f *Fixer) error {
-	for _, def := range f.tree.Defs {
-		mod, ok := def.(*parser.Module)
-		if !(ok && mod.Type == "hidl_interface") {
-			continue
-		}
-		removeProperty(mod, "types")
-	}
-	return nil
-}
-
-func removeSoongConfigBoolVariable(f *Fixer) error {
-	found := map[string]bool{}
-	newDefs := make([]parser.Definition, 0, len(f.tree.Defs))
-	for _, def := range f.tree.Defs {
-		if mod, ok := def.(*parser.Module); ok && mod.Type == "soong_config_bool_variable" {
-			if name, ok := getLiteralStringPropertyValue(mod, "name"); ok {
-				found[name] = true
-			} else {
-				return fmt.Errorf("Found soong_config_bool_variable without a name")
-			}
-		} else {
-			newDefs = append(newDefs, def)
-		}
-	}
-	f.tree.Defs = newDefs
-
-	if len(found) == 0 {
-		return nil
-	}
-
-	return runPatchListMod(func(mod *parser.Module, buf []byte, patchList *parser.PatchList) error {
-		if mod.Type != "soong_config_module_type" {
-			return nil
-		}
-
-		variables, ok := getLiteralListProperty(mod, "variables")
-		if !ok {
-			return nil
-		}
-
-		boolValues := strings.Builder{}
-		empty := true
-		for _, item := range variables.Values {
-			nameValue, ok := item.(*parser.String)
-			if !ok {
-				empty = false
-				continue
-			}
-			if found[nameValue.Value] {
-				patchList.Add(item.Pos().Offset, item.End().Offset+2, "")
-
-				boolValues.WriteString(`"`)
-				boolValues.WriteString(nameValue.Value)
-				boolValues.WriteString(`",`)
-			} else {
-				empty = false
-			}
-		}
-		if empty {
-			*patchList = parser.PatchList{}
-
-			prop, _ := mod.GetProperty("variables")
-			patchList.Add(prop.Pos().Offset, prop.End().Offset+2, "")
-		}
-		if boolValues.Len() == 0 {
-			return nil
-		}
-
-		bool_variables, ok := getLiteralListProperty(mod, "bool_variables")
-		if ok {
-			patchList.Add(bool_variables.RBracePos.Offset, bool_variables.RBracePos.Offset, ","+boolValues.String())
-		} else {
-			patchList.Add(variables.RBracePos.Offset+2, variables.RBracePos.Offset+2,
-				fmt.Sprintf(`bool_variables: [%s],`, boolValues.String()))
-		}
-
-		return nil
-	})(f)
-
 	return nil
 }
 
@@ -1223,13 +1034,4 @@ func removeProperty(mod *parser.Module, propertyName string) {
 		}
 	}
 	mod.Properties = newList
-}
-
-func inList(s string, list []string) bool {
-	for _, v := range list {
-		if s == v {
-			return true
-		}
-	}
-	return false
 }

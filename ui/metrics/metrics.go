@@ -17,22 +17,19 @@ package metrics
 import (
 	"io/ioutil"
 	"os"
-	"runtime"
-	"time"
+	"strconv"
+
+	"android/soong/ui/metrics/metrics_proto"
 
 	"github.com/golang/protobuf/proto"
-
-	soong_metrics_proto "android/soong/ui/metrics/metrics_proto"
 )
 
 const (
-	PrimaryNinja    = "ninja"
-	RunKati         = "kati"
-	RunSetupTool    = "setup"
-	RunShutdownTool = "shutdown"
-	RunSoong        = "soong"
-	TestRun         = "test"
-	Total           = "total"
+	RunSetupTool = "setup"
+	RunKati      = "kati"
+	RunSoong     = "soong"
+	PrimaryNinja = "ninja"
+	TestRun      = "test"
 )
 
 type Metrics struct {
@@ -59,15 +56,9 @@ func (m *Metrics) SetTimeMetrics(perf soong_metrics_proto.PerfInfo) {
 	case PrimaryNinja:
 		m.metrics.NinjaRuns = append(m.metrics.NinjaRuns, &perf)
 		break
-	case Total:
-		m.metrics.Total = &perf
 	default:
 		// ignored
 	}
-}
-
-func (m *Metrics) BuildConfig(b *soong_metrics_proto.BuildConfig) {
-	m.metrics.BuildConfig = b
 }
 
 func (m *Metrics) SetMetadataMetrics(metadata map[string]string) {
@@ -103,6 +94,8 @@ func (m *Metrics) SetMetadataMetrics(metadata map[string]string) {
 			m.metrics.HostArch = m.getArch(v)
 		case "HOST_2ND_ARCH":
 			m.metrics.Host_2NdArch = m.getArch(v)
+		case "HOST_OS":
+			m.metrics.HostOs = proto.String(v)
 		case "HOST_OS_EXTRA":
 			m.metrics.HostOsExtra = proto.String(v)
 		case "HOST_CROSS_OS":
@@ -134,42 +127,23 @@ func (m *Metrics) getArch(arch string) *soong_metrics_proto.MetricsBase_Arch {
 	}
 }
 
-func (m *Metrics) SetBuildDateTime(buildTimestamp time.Time) {
-	m.metrics.BuildDateTimestamp = proto.Int64(buildTimestamp.UnixNano() / int64(time.Second))
+func (m *Metrics) SetBuildDateTime(date_time string) {
+	if date_time != "" {
+		date_time_timestamp, err := strconv.ParseInt(date_time, 10, 64)
+		if err != nil {
+			panic(err)
+		}
+		m.metrics.BuildDateTimestamp = &date_time_timestamp
+	}
+}
+
+func (m *Metrics) Serialize() (data []byte, err error) {
+	return proto.Marshal(&m.metrics)
 }
 
 // exports the output to the file at outputPath
-func (m *Metrics) Dump(outputPath string) error {
-	// ignore the error if the hostname could not be retrieved as it
-	// is not a critical metric to extract.
-	if hostname, err := os.Hostname(); err == nil {
-		m.metrics.Hostname = proto.String(hostname)
-	}
-	m.metrics.HostOs = proto.String(runtime.GOOS)
-	return writeMessageToFile(&m.metrics, outputPath)
-}
-
-type CriticalUserJourneysMetrics struct {
-	cujs soong_metrics_proto.CriticalUserJourneysMetrics
-}
-
-func NewCriticalUserJourneysMetrics() *CriticalUserJourneysMetrics {
-	return &CriticalUserJourneysMetrics{}
-}
-
-func (c *CriticalUserJourneysMetrics) Add(name string, metrics *Metrics) {
-	c.cujs.Cujs = append(c.cujs.Cujs, &soong_metrics_proto.CriticalUserJourneyMetrics{
-		Name:    proto.String(name),
-		Metrics: &metrics.metrics,
-	})
-}
-
-func (c *CriticalUserJourneysMetrics) Dump(outputPath string) (err error) {
-	return writeMessageToFile(&c.cujs, outputPath)
-}
-
-func writeMessageToFile(pb proto.Message, outputPath string) (err error) {
-	data, err := proto.Marshal(pb)
+func (m *Metrics) Dump(outputPath string) (err error) {
+	data, err := m.Serialize()
 	if err != nil {
 		return err
 	}

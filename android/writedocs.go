@@ -69,5 +69,9 @@ func (c *docsSingleton) GenerateBuildActions(ctx SingletonContext) {
 	})
 
 	// Add a phony target for building the documentation
-	ctx.Phony("soong_docs", docsFile)
+	ctx.Build(pctx, BuildParams{
+		Rule:   blueprint.Phony,
+		Output: PathForPhony(ctx, "soong_docs"),
+		Input:  docsFile,
+	})
 }

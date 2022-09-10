@@ -18,7 +18,6 @@ import (
 	"strings"
 
 	"android/soong/android"
-	"android/soong/remoteexec"
 )
 
 var (
@@ -47,10 +46,6 @@ var (
 		"-g",
 
 		"-fno-strict-aliasing",
-
-		"-Werror=date-time",
-		"-Werror=pragma-pack",
-		"-Werror=pragma-pack-suspicious-include",
 	}
 
 	commonGlobalConlyflags = []string{}
@@ -72,6 +67,7 @@ var (
 		"-Werror=non-virtual-dtor",
 		"-Werror=address",
 		"-Werror=sequence-point",
+		"-Werror=date-time",
 		"-Werror=format-security",
 	}
 
@@ -89,7 +85,6 @@ var (
 		"-Wl,--no-undefined-version",
 		"-Wl,--exclude-libs,libgcc.a",
 		"-Wl,--exclude-libs,libgcc_stripped.a",
-		"-Wl,--exclude-libs,libunwind_llvm.a",
 	}
 
 	deviceGlobalLldflags = append(ClangFilterUnknownLldflags(deviceGlobalLdflags),
@@ -112,7 +107,6 @@ var (
 	noOverrideGlobalCflags = []string{
 		"-Werror=int-to-pointer-cast",
 		"-Werror=pointer-to-int-cast",
-		"-Werror=fortify-source",
 	}
 
 	IllegalFlags = []string{
@@ -128,8 +122,8 @@ var (
 
 	// prebuilts/clang default settings.
 	ClangDefaultBase         = "prebuilts/clang/host"
-	ClangDefaultVersion      = "clang-r383902b1"
-	ClangDefaultShortVersion = "11.0.2"
+	ClangDefaultVersion      = "clang-r353983c1"
+	ClangDefaultShortVersion = "9.0.3"
 
 	// Directories with warnings from Android.bp files.
 	WarningAllowedProjects = []string{
@@ -156,27 +150,8 @@ func init() {
 	pctx.StaticVariable("HostGlobalLdflags", strings.Join(hostGlobalLdflags, " "))
 	pctx.StaticVariable("HostGlobalLldflags", strings.Join(hostGlobalLldflags, " "))
 
-	pctx.VariableFunc("CommonClangGlobalCflags", func(ctx android.PackageVarContext) string {
-		flags := ClangFilterUnknownCflags(commonGlobalCflags)
-		flags = append(flags, "${ClangExtraCflags}")
-
-		// http://b/131390872
-		// Automatically initialize any uninitialized stack variables.
-		// Prefer zero-init if multiple options are set.
-		if ctx.Config().IsEnvTrue("AUTO_ZERO_INITIALIZE") {
-			flags = append(flags, "-ftrivial-auto-var-init=zero -enable-trivial-auto-var-init-zero-knowing-it-will-be-removed-from-clang")
-		} else if ctx.Config().IsEnvTrue("AUTO_PATTERN_INITIALIZE") {
-			flags = append(flags, "-ftrivial-auto-var-init=pattern")
-		} else if ctx.Config().IsEnvTrue("AUTO_UNINITIALIZE") {
-			flags = append(flags, "-ftrivial-auto-var-init=uninitialized")
-		} else {
-			// Default to zero initialization.
-			flags = append(flags, "-ftrivial-auto-var-init=zero -enable-trivial-auto-var-init-zero-knowing-it-will-be-removed-from-clang")
-		}
-
-		return strings.Join(flags, " ")
-	})
-
+	pctx.StaticVariable("CommonClangGlobalCflags",
+		strings.Join(append(ClangFilterUnknownCflags(commonGlobalCflags), "${ClangExtraCflags}"), " "))
 	pctx.VariableFunc("DeviceClangGlobalCflags", func(ctx android.PackageVarContext) string {
 		if ctx.Config().Fuchsia() {
 			return strings.Join(ClangFilterUnknownCflags(deviceGlobalCflags), " ")
@@ -227,6 +202,7 @@ func init() {
 	})
 	pctx.StaticVariable("ClangPath", "${ClangBase}/${HostPrebuiltTag}/${ClangVersion}")
 	pctx.StaticVariable("ClangBin", "${ClangPath}/bin")
+	pctx.StaticVariable("ClangTidyShellPath", "build/soong/scripts/clang-tidy.sh")
 
 	pctx.VariableFunc("ClangShortVersion", func(ctx android.PackageVarContext) string {
 		if override := ctx.Config().Getenv("LLVM_RELEASE_VERSION"); override != "" {
@@ -256,12 +232,6 @@ func init() {
 		}
 		return ""
 	})
-
-	pctx.VariableFunc("RECXXPool", remoteexec.EnvOverrideFunc("RBE_CXX_POOL", remoteexec.DefaultPool))
-	pctx.VariableFunc("RECXXLinksPool", remoteexec.EnvOverrideFunc("RBE_CXX_LINKS_POOL", remoteexec.DefaultPool))
-	pctx.VariableFunc("RECXXLinksExecStrategy", remoteexec.EnvOverrideFunc("RBE_CXX_LINKS_EXEC_STRATEGY", remoteexec.LocalExecStrategy))
-	pctx.VariableFunc("REAbiDumperExecStrategy", remoteexec.EnvOverrideFunc("RBE_ABI_DUMPER_EXEC_STRATEGY", remoteexec.LocalExecStrategy))
-	pctx.VariableFunc("REAbiLinkerExecStrategy", remoteexec.EnvOverrideFunc("RBE_ABI_LINKER_EXEC_STRATEGY", remoteexec.LocalExecStrategy))
 }
 
 var HostPrebuiltTag = pctx.VariableConfigMethod("HostPrebuiltTag", android.Config.PrebuiltOS)
@@ -274,13 +244,4 @@ func bionicHeaders(kernelArch string) string {
 		"-isystem bionic/libc/kernel/android/scsi",
 		"-isystem bionic/libc/kernel/android/uapi",
 	}, " ")
-}
-
-func envOverrideFunc(envVar, defaultVal string) func(ctx android.PackageVarContext) string {
-	return func(ctx android.PackageVarContext) string {
-		if override := ctx.Config().Getenv(envVar); override != "" {
-			return override
-		}
-		return defaultVal
-	}
 }

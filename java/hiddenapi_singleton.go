@@ -15,22 +15,17 @@
 package java
 
 import (
-	"fmt"
-
 	"android/soong/android"
 )
 
 func init() {
 	android.RegisterSingletonType("hiddenapi", hiddenAPISingletonFactory)
-	android.RegisterSingletonType("hiddenapi_index", hiddenAPIIndexSingletonFactory)
-	android.RegisterModuleType("hiddenapi_flags", hiddenAPIFlagsFactory)
 }
 
 type hiddenAPISingletonPathsStruct struct {
-	flags     android.OutputPath
-	index     android.OutputPath
-	metadata  android.OutputPath
 	stubFlags android.OutputPath
+	flags     android.OutputPath
+	metadata  android.OutputPath
 }
 
 var hiddenAPISingletonPathsKey = android.NewOnceKey("hiddenAPISingletonPathsKey")
@@ -41,10 +36,9 @@ var hiddenAPISingletonPathsKey = android.NewOnceKey("hiddenAPISingletonPathsKey"
 func hiddenAPISingletonPaths(ctx android.PathContext) hiddenAPISingletonPathsStruct {
 	return ctx.Config().Once(hiddenAPISingletonPathsKey, func() interface{} {
 		return hiddenAPISingletonPathsStruct{
-			flags:     android.PathForOutput(ctx, "hiddenapi", "hiddenapi-flags.csv"),
-			index:     android.PathForOutput(ctx, "hiddenapi", "hiddenapi-index.csv"),
-			metadata:  android.PathForOutput(ctx, "hiddenapi", "hiddenapi-greylist.csv"),
 			stubFlags: android.PathForOutput(ctx, "hiddenapi", "hiddenapi-stub-flags.txt"),
+			flags:     android.PathForOutput(ctx, "hiddenapi", "hiddenapi-flags.csv"),
+			metadata:  android.PathForOutput(ctx, "hiddenapi", "hiddenapi-greylist.csv"),
 		}
 	}).(hiddenAPISingletonPathsStruct)
 }
@@ -155,14 +149,6 @@ func stubFlagsRule(ctx android.SingletonContext) {
 		// Collect dex jar paths for modules that had hiddenapi encode called on them.
 		if h, ok := module.(hiddenAPIIntf); ok {
 			if jar := h.bootDexJar(); jar != nil {
-				// For a java lib included in an APEX, only take the one built for
-				// the platform variant, and skip the variants for APEXes.
-				// Otherwise, the hiddenapi tool will complain about duplicated classes
-				if a, ok := module.(android.ApexModule); ok {
-					if android.InAnyApex(module.Name()) && !a.IsForPlatform() {
-						return
-					}
-				}
 				bootDexJars = append(bootDexJars, jar)
 			}
 		}
@@ -193,7 +179,7 @@ func stubFlagsRule(ctx android.SingletonContext) {
 	rule.MissingDeps(missingDeps)
 
 	rule.Command().
-		Tool(ctx.Config().HostToolPath(ctx, "hiddenapi")).
+		Tool(pctx.HostBinToolPath(ctx, "hiddenapi")).
 		Text("list").
 		FlagForEachInput("--boot-dex=", bootDexJars).
 		FlagWithInputList("--public-stub-classpath=", publicStubPaths, ":").
@@ -207,43 +193,27 @@ func stubFlagsRule(ctx android.SingletonContext) {
 	rule.Build(pctx, ctx, "hiddenAPIStubFlagsFile", "hiddenapi stub flags")
 }
 
-func moduleForGreyListRemovedApis(ctx android.SingletonContext, module android.Module) bool {
-	switch ctx.ModuleName(module) {
-	case "api-stubs-docs", "system-api-stubs-docs", "android.car-stubs-docs", "android.car-system-stubs-docs":
-		return true
-	default:
-		return false
-	}
-}
-
 // flagsRule creates a rule to build hiddenapi-flags.csv out of flags.csv files generated for boot image modules and
 // the greylists.
 func flagsRule(ctx android.SingletonContext) android.Path {
 	var flagsCSV android.Paths
-	var greylistRemovedApis android.Paths
+
+	var greylistIgnoreConflicts android.Path
 
 	ctx.VisitAllModules(func(module android.Module) {
 		if h, ok := module.(hiddenAPIIntf); ok {
 			if csv := h.flagsCSV(); csv != nil {
 				flagsCSV = append(flagsCSV, csv)
 			}
-		} else if ds, ok := module.(*Droidstubs); ok {
-			// Track @removed public and system APIs via corresponding droidstubs targets.
-			// These APIs are not present in the stubs, however, we have to keep allowing access
-			// to them at runtime.
-			if moduleForGreyListRemovedApis(ctx, module) {
-				greylistRemovedApis = append(greylistRemovedApis, ds.removedDexApiFile)
-			}
+		} else if ds, ok := module.(*Droidstubs); ok && ctx.ModuleName(module) == "hiddenapi-lists-docs" {
+			greylistIgnoreConflicts = ds.removedDexApiFile
 		}
 	})
 
-	combinedRemovedApis := android.PathForOutput(ctx, "hiddenapi", "combined-removed-dex.txt")
-	ctx.Build(pctx, android.BuildParams{
-		Rule:        android.Cat,
-		Inputs:      greylistRemovedApis,
-		Output:      combinedRemovedApis,
-		Description: "Combine removed apis for " + combinedRemovedApis.String(),
-	})
+	if greylistIgnoreConflicts == nil {
+		ctx.Errorf("failed to find removed_dex_api_filename from hiddenapi-lists-docs module")
+		return nil
+	}
 
 	rule := android.NewRuleBuilder()
 
@@ -258,9 +228,8 @@ func flagsRule(ctx android.SingletonContext) android.Path {
 		Inputs(flagsCSV).
 		FlagWithInput("--greylist ",
 			android.PathForSource(ctx, "frameworks/base/config/hiddenapi-greylist.txt")).
-		FlagWithInput("--greylist-ignore-conflicts ", combinedRemovedApis).
-		FlagWithInput("--greylist-max-q ",
-			android.PathForSource(ctx, "frameworks/base/config/hiddenapi-greylist-max-q.txt")).
+		FlagWithInput("--greylist-ignore-conflicts ",
+			greylistIgnoreConflicts).
 		FlagWithInput("--greylist-max-p ",
 			android.PathForSource(ctx, "frameworks/base/config/hiddenapi-greylist-max-p.txt")).
 		FlagWithInput("--greylist-max-o-ignore-conflicts ",
@@ -311,9 +280,10 @@ func metadataRule(ctx android.SingletonContext) android.Path {
 	outputPath := hiddenAPISingletonPaths(ctx).metadata
 
 	rule.Command().
-		BuiltTool(ctx, "merge_csv").
-		FlagWithOutput("--output=", outputPath).
-		Inputs(metadataCSV)
+		Tool(android.PathForSource(ctx, "frameworks/base/tools/hiddenapi/merge_csv.py")).
+		Inputs(metadataCSV).
+		Text(">").
+		Output(outputPath)
 
 	rule.Build(pctx, ctx, "hiddenAPIGreylistMetadataFile", "hiddenapi greylist metadata")
 
@@ -336,91 +306,4 @@ func commitChangeForRestat(rule *android.RuleBuilder, tempPath, outputPath andro
 		Text("mv").Input(tempPath).Output(outputPath).Text(";").
 		Text("fi").
 		Text(")")
-}
-
-type hiddenAPIFlagsProperties struct {
-	// name of the file into which the flags will be copied.
-	Filename *string
-}
-
-type hiddenAPIFlags struct {
-	android.ModuleBase
-
-	properties hiddenAPIFlagsProperties
-
-	outputFilePath android.OutputPath
-}
-
-func (h *hiddenAPIFlags) GenerateAndroidBuildActions(ctx android.ModuleContext) {
-	filename := String(h.properties.Filename)
-
-	inputPath := hiddenAPISingletonPaths(ctx).flags
-	h.outputFilePath = android.PathForModuleOut(ctx, filename).OutputPath
-
-	// This ensures that outputFilePath has the correct name for others to
-	// use, as the source file may have a different name.
-	ctx.Build(pctx, android.BuildParams{
-		Rule:   android.Cp,
-		Output: h.outputFilePath,
-		Input:  inputPath,
-	})
-}
-
-func (h *hiddenAPIFlags) OutputFiles(tag string) (android.Paths, error) {
-	switch tag {
-	case "":
-		return android.Paths{h.outputFilePath}, nil
-	default:
-		return nil, fmt.Errorf("unsupported module reference tag %q", tag)
-	}
-}
-
-// hiddenapi-flags provides access to the hiddenapi-flags.csv file generated during the build.
-func hiddenAPIFlagsFactory() android.Module {
-	module := &hiddenAPIFlags{}
-	module.AddProperties(&module.properties)
-	android.InitAndroidArchModule(module, android.HostAndDeviceSupported, android.MultilibCommon)
-	return module
-}
-
-func hiddenAPIIndexSingletonFactory() android.Singleton {
-	return &hiddenAPIIndexSingleton{}
-}
-
-type hiddenAPIIndexSingleton struct {
-	index android.Path
-}
-
-func (h *hiddenAPIIndexSingleton) GenerateBuildActions(ctx android.SingletonContext) {
-	// Don't run any hiddenapi rules if UNSAFE_DISABLE_HIDDENAPI_FLAGS=true
-	if ctx.Config().IsEnvTrue("UNSAFE_DISABLE_HIDDENAPI_FLAGS") {
-		return
-	}
-
-	indexes := android.Paths{}
-	ctx.VisitAllModules(func(module android.Module) {
-		if h, ok := module.(hiddenAPIIntf); ok {
-			if h.indexCSV() != nil {
-				indexes = append(indexes, h.indexCSV())
-			}
-		}
-	})
-
-	rule := android.NewRuleBuilder()
-	rule.Command().
-		BuiltTool(ctx, "merge_csv").
-		FlagWithArg("--header=", "signature,file,startline,startcol,endline,endcol,properties").
-		FlagWithOutput("--output=", hiddenAPISingletonPaths(ctx).index).
-		Inputs(indexes)
-	rule.Build(pctx, ctx, "singleton-merged-hiddenapi-index", "Singleton merged Hidden API index")
-
-	h.index = hiddenAPISingletonPaths(ctx).index
-}
-
-func (h *hiddenAPIIndexSingleton) MakeVars(ctx android.MakeVarsContext) {
-	if ctx.Config().IsEnvTrue("UNSAFE_DISABLE_HIDDENAPI_FLAGS") {
-		return
-	}
-
-	ctx.Strict("INTERNAL_PLATFORM_HIDDENAPI_INDEX", h.index.String())
 }

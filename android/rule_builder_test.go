@@ -16,6 +16,8 @@ package android
 
 import (
 	"fmt"
+	"io/ioutil"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -27,18 +29,18 @@ import (
 )
 
 func pathContext() PathContext {
-	return PathContextForTesting(TestConfig("out", nil, "", map[string][]byte{
-		"ld":      nil,
-		"a.o":     nil,
-		"b.o":     nil,
-		"cp":      nil,
-		"a":       nil,
-		"b":       nil,
-		"ls":      nil,
-		"turbine": nil,
-		"java":    nil,
-		"javac":   nil,
-	}))
+	return PathContextForTesting(TestConfig("out", nil),
+		map[string][]byte{
+			"ld":      nil,
+			"a.o":     nil,
+			"b.o":     nil,
+			"cp":      nil,
+			"a":       nil,
+			"b":       nil,
+			"ls":      nil,
+			"turbine": nil,
+			"java":    nil,
+		})
 }
 
 func ExampleRuleBuilder() {
@@ -235,49 +237,19 @@ func ExampleRuleBuilderCommand_FlagWithList() {
 	// ls --sort=time,size
 }
 
-func ExampleRuleBuilderCommand_FlagWithRspFileInputList() {
-	ctx := pathContext()
-	fmt.Println(NewRuleBuilder().Command().
-		Tool(PathForSource(ctx, "javac")).
-		FlagWithRspFileInputList("@", PathsForTesting("a.java", "b.java")).
-		NinjaEscapedString())
-	// Output:
-	// javac @$out.rsp
-}
-
-func ExampleRuleBuilderCommand_String() {
-	fmt.Println(NewRuleBuilder().Command().
-		Text("FOO=foo").
-		Text("echo $FOO").
-		String())
-	// Output:
-	// FOO=foo echo $FOO
-}
-
-func ExampleRuleBuilderCommand_NinjaEscapedString() {
-	fmt.Println(NewRuleBuilder().Command().
-		Text("FOO=foo").
-		Text("echo $FOO").
-		NinjaEscapedString())
-	// Output:
-	// FOO=foo echo $$FOO
-}
-
 func TestRuleBuilder(t *testing.T) {
 	fs := map[string][]byte{
-		"dep_fixer":  nil,
-		"input":      nil,
-		"Implicit":   nil,
-		"Input":      nil,
-		"OrderOnly":  nil,
-		"OrderOnlys": nil,
-		"Tool":       nil,
-		"input2":     nil,
-		"tool2":      nil,
-		"input3":     nil,
+		"dep_fixer": nil,
+		"input":     nil,
+		"Implicit":  nil,
+		"Input":     nil,
+		"Tool":      nil,
+		"input2":    nil,
+		"tool2":     nil,
+		"input3":    nil,
 	}
 
-	ctx := PathContextForTesting(TestConfig("out", nil, "", fs))
+	ctx := PathContextForTesting(TestConfig("out", nil), fs)
 
 	addCommands := func(rule *RuleBuilder) {
 		cmd := rule.Command().
@@ -292,7 +264,6 @@ func TestRuleBuilder(t *testing.T) {
 			ImplicitOutput(PathForOutput(ctx, "ImplicitOutput")).
 			Input(PathForSource(ctx, "Input")).
 			Output(PathForOutput(ctx, "Output")).
-			OrderOnly(PathForSource(ctx, "OrderOnly")).
 			Text("Text").
 			Tool(PathForSource(ctx, "Tool"))
 
@@ -301,7 +272,6 @@ func TestRuleBuilder(t *testing.T) {
 			DepFile(PathForOutput(ctx, "depfile2")).
 			Input(PathForSource(ctx, "input2")).
 			Output(PathForOutput(ctx, "output2")).
-			OrderOnlys(PathsForSource(ctx, []string{"OrderOnlys"})).
 			Tool(PathForSource(ctx, "tool2"))
 
 		// Test updates to the first command after the second command has been started
@@ -321,7 +291,6 @@ func TestRuleBuilder(t *testing.T) {
 	wantOutputs := PathsForOutput(ctx, []string{"ImplicitOutput", "Output", "output", "output2", "output3"})
 	wantDepFiles := PathsForOutput(ctx, []string{"DepFile", "depfile", "ImplicitDepFile", "depfile2"})
 	wantTools := PathsForSource(ctx, []string{"Tool", "tool2"})
-	wantOrderOnlys := PathsForSource(ctx, []string{"OrderOnly", "OrderOnlys"})
 
 	t.Run("normal", func(t *testing.T) {
 		rule := NewRuleBuilder()
@@ -350,9 +319,6 @@ func TestRuleBuilder(t *testing.T) {
 		}
 		if g, w := rule.Tools(), wantTools; !reflect.DeepEqual(w, g) {
 			t.Errorf("\nwant rule.Tools() = %#v\n                got %#v", w, g)
-		}
-		if g, w := rule.OrderOnlys(), wantOrderOnlys; !reflect.DeepEqual(w, g) {
-			t.Errorf("\nwant rule.OrderOnlys() = %#v\n                got %#v", w, g)
 		}
 
 		if g, w := rule.depFileMergerCmd(ctx, rule.DepFiles()).String(), wantDepMergerCommand; g != w {
@@ -387,9 +353,6 @@ func TestRuleBuilder(t *testing.T) {
 		}
 		if g, w := rule.Tools(), wantTools; !reflect.DeepEqual(w, g) {
 			t.Errorf("\nwant rule.Tools() = %#v\n                got %#v", w, g)
-		}
-		if g, w := rule.OrderOnlys(), wantOrderOnlys; !reflect.DeepEqual(w, g) {
-			t.Errorf("\nwant rule.OrderOnlys() = %#v\n                got %#v", w, g)
 		}
 
 		if g, w := rule.depFileMergerCmd(ctx, rule.DepFiles()).String(), wantDepMergerCommand; g != w {
@@ -455,10 +418,11 @@ func testRuleBuilder_Build(ctx BuilderContext, in Path, out, outDep, outDir Writ
 }
 
 func TestRuleBuilder_Build(t *testing.T) {
-	fs := map[string][]byte{
-		"bar": nil,
-		"cp":  nil,
+	buildDir, err := ioutil.TempDir("", "soong_test_rule_builder")
+	if err != nil {
+		t.Fatal(err)
 	}
+	defer os.RemoveAll(buildDir)
 
 	bp := `
 		rule_builder_test {
@@ -473,11 +437,16 @@ func TestRuleBuilder_Build(t *testing.T) {
 		}
 	`
 
-	config := TestConfig(buildDir, nil, bp, fs)
+	config := TestConfig(buildDir, nil)
 	ctx := NewTestContext()
-	ctx.RegisterModuleType("rule_builder_test", testRuleBuilderFactory)
-	ctx.RegisterSingletonType("rule_builder_test", testRuleBuilderSingletonFactory)
-	ctx.Register(config)
+	ctx.MockFileSystem(map[string][]byte{
+		"Android.bp": []byte(bp),
+		"bar":        nil,
+		"cp":         nil,
+	})
+	ctx.RegisterModuleType("rule_builder_test", ModuleFactoryAdaptor(testRuleBuilderFactory))
+	ctx.RegisterSingletonType("rule_builder_test", SingletonFactoryAdaptor(testRuleBuilderSingletonFactory))
+	ctx.Register()
 
 	_, errs := ctx.ParseFileList(".", []string{"Android.bp"})
 	FailIfErrored(t, errs)
@@ -543,78 +512,4 @@ func TestRuleBuilder_Build(t *testing.T) {
 		check(t, ctx.SingletonForTests("rule_builder_test").Rule("rule"),
 			"cp bar "+outFile, outFile, outFile+".d", true, nil)
 	})
-}
-
-func Test_ninjaEscapeExceptForSpans(t *testing.T) {
-	type args struct {
-		s     string
-		spans [][2]int
-	}
-	tests := []struct {
-		name string
-		args args
-		want string
-	}{
-		{
-			name: "empty",
-			args: args{
-				s: "",
-			},
-			want: "",
-		},
-		{
-			name: "unescape none",
-			args: args{
-				s: "$abc",
-			},
-			want: "$$abc",
-		},
-		{
-			name: "unescape all",
-			args: args{
-				s:     "$abc",
-				spans: [][2]int{{0, 4}},
-			},
-			want: "$abc",
-		},
-		{
-			name: "unescape first",
-			args: args{
-				s:     "$abc$",
-				spans: [][2]int{{0, 1}},
-			},
-			want: "$abc$$",
-		},
-		{
-			name: "unescape last",
-			args: args{
-				s:     "$abc$",
-				spans: [][2]int{{4, 5}},
-			},
-			want: "$$abc$",
-		},
-		{
-			name: "unescape middle",
-			args: args{
-				s:     "$a$b$c$",
-				spans: [][2]int{{2, 5}},
-			},
-			want: "$$a$b$c$$",
-		},
-		{
-			name: "unescape multiple",
-			args: args{
-				s:     "$a$b$c$",
-				spans: [][2]int{{2, 3}, {4, 5}},
-			},
-			want: "$$a$b$c$$",
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := ninjaEscapeExceptForSpans(tt.args.s, tt.args.spans); got != tt.want {
-				t.Errorf("ninjaEscapeExceptForSpans() = %v, want %v", got, tt.want)
-			}
-		})
-	}
 }

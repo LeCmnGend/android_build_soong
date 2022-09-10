@@ -21,20 +21,31 @@ import (
 	"android/soong/android"
 )
 
-func testGenruleContext(config android.Config) *android.TestContext {
+func testGenruleContext(config android.Config, bp string,
+	fs map[string][]byte) *android.TestContext {
+
 	ctx := android.NewTestArchContext()
-	ctx.RegisterModuleType("cc_genrule", genRuleFactory)
-	ctx.Register(config)
+	ctx.RegisterModuleType("cc_genrule", android.ModuleFactoryAdaptor(genRuleFactory))
+	ctx.Register()
+
+	mockFS := map[string][]byte{
+		"Android.bp": []byte(bp),
+		"tool":       nil,
+		"foo":        nil,
+		"bar":        nil,
+	}
+
+	for k, v := range fs {
+		mockFS[k] = v
+	}
+
+	ctx.MockFileSystem(mockFS)
 
 	return ctx
 }
 
 func TestArchGenruleCmd(t *testing.T) {
-	fs := map[string][]byte{
-		"tool": nil,
-		"foo":  nil,
-		"bar":  nil,
-	}
+	config := android.TestArchConfig(buildDir, nil)
 	bp := `
 				cc_genrule {
 					name: "gen",
@@ -52,9 +63,8 @@ func TestArchGenruleCmd(t *testing.T) {
 					},
 				}
 			`
-	config := android.TestArchConfig(buildDir, nil, bp, fs)
 
-	ctx := testGenruleContext(config)
+	ctx := testGenruleContext(config, bp, nil)
 
 	_, errs := ctx.ParseFileList(".", []string{"Android.bp"})
 	if errs == nil {

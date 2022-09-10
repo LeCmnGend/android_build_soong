@@ -25,14 +25,13 @@ import (
 	"github.com/google/blueprint/proptools"
 
 	"android/soong/android"
-	"android/soong/java/config"
 )
 
 var (
 	jacoco = pctx.AndroidStaticRule("jacoco", blueprint.RuleParams{
 		Command: `rm -rf $tmpDir && mkdir -p $tmpDir && ` +
 			`${config.Zip2ZipCmd} -i $in -o $strippedJar $stripSpec && ` +
-			`${config.JavaCmd} ${config.JavaVmFlags} -jar ${config.JacocoCLIJar} ` +
+			`${config.JavaCmd} -jar ${config.JacocoCLIJar} ` +
 			`  instrument --quiet --dest $tmpDir $strippedJar && ` +
 			`${config.Ziptime} $tmpJar && ` +
 			`${config.MergeZipsCmd} --ignore-duplicates -j $out $tmpJar $in`,
@@ -77,8 +76,7 @@ func (j *Module) jacocoModuleToZipCommand(ctx android.ModuleContext) string {
 	if err != nil {
 		ctx.PropertyErrorf("jacoco.include_filter", "%s", err.Error())
 	}
-	// Also include the default list of classes to exclude from instrumentation.
-	excludes, err := jacocoFiltersToSpecs(append(j.properties.Jacoco.Exclude_filter, config.DefaultJacocoExcludeFilter...))
+	excludes, err := jacocoFiltersToSpecs(j.properties.Jacoco.Exclude_filter)
 	if err != nil {
 		ctx.PropertyErrorf("jacoco.exclude_filter", "%s", err.Error())
 	}

@@ -27,7 +27,6 @@ import (
 	"github.com/google/blueprint/proptools"
 
 	"android/soong/android"
-	"android/soong/remoteexec"
 )
 
 var (
@@ -39,18 +38,16 @@ var (
 	// this, all java rules write into separate directories and then are combined into a .jar file
 	// (if the rule produces .class files) or a .srcjar file (if the rule produces .java files).
 	// .srcjar files are unzipped into a temporary directory when compiled with javac.
-	// TODO(b/143658984): goma can't handle the --system argument to javac.
-	javac, javacRE = remoteexec.MultiCommandStaticRules(pctx, "javac",
+	javac = pctx.AndroidGomaStaticRule("javac",
 		blueprint.RuleParams{
 			Command: `rm -rf "$outDir" "$annoDir" "$srcJarDir" && mkdir -p "$outDir" "$annoDir" "$srcJarDir" && ` +
 				`${config.ZipSyncCmd} -d $srcJarDir -l $srcJarDir/list -f "*.java" $srcJars && ` +
 				`(if [ -s $srcJarDir/list ] || [ -s $out.rsp ] ; then ` +
-				`${config.SoongJavacWrapper} $javaTemplate${config.JavacCmd} ` +
-				`${config.JavacHeapFlags} ${config.JavacVmFlags} ${config.CommonJdkFlags} ` +
+				`${config.SoongJavacWrapper} ${config.JavacWrapper}${config.JavacCmd} ${config.JavacHeapFlags} ${config.CommonJdkFlags} ` +
 				`$processorpath $processor $javacFlags $bootClasspath $classpath ` +
 				`-source $javaVersion -target $javaVersion ` +
 				`-d $outDir -s $annoDir @$out.rsp @$srcJarDir/list ; fi ) && ` +
-				`$zipTemplate${config.SoongZipCmd} -jar -o $out -C $outDir -D $outDir && ` +
+				`${config.SoongZipCmd} -jar -o $out -C $outDir -D $outDir && ` +
 				`rm -rf "$srcJarDir"`,
 			CommandDeps: []string{
 				"${config.JavacCmd}",
@@ -60,76 +57,14 @@ var (
 			CommandOrderOnly: []string{"${config.SoongJavacWrapper}"},
 			Rspfile:          "$out.rsp",
 			RspfileContent:   "$in",
-		}, map[string]*remoteexec.REParams{
-			"$javaTemplate": &remoteexec.REParams{
-				Labels:       map[string]string{"type": "compile", "lang": "java", "compiler": "javac"},
-				ExecStrategy: "${config.REJavacExecStrategy}",
-				Platform:     map[string]string{remoteexec.PoolKey: "${config.REJavaPool}"},
-			},
-			"$zipTemplate": &remoteexec.REParams{
-				Labels:       map[string]string{"type": "tool", "name": "soong_zip"},
-				Inputs:       []string{"${config.SoongZipCmd}", "$outDir"},
-				OutputFiles:  []string{"$out"},
-				ExecStrategy: "${config.REJavacExecStrategy}",
-				Platform:     map[string]string{remoteexec.PoolKey: "${config.REJavaPool}"},
-			},
-		}, []string{"javacFlags", "bootClasspath", "classpath", "processorpath", "processor", "srcJars", "srcJarDir",
-			"outDir", "annoDir", "javaVersion"}, nil)
-
-	_ = pctx.VariableFunc("kytheCorpus",
-		func(ctx android.PackageVarContext) string { return ctx.Config().XrefCorpusName() })
-	_ = pctx.VariableFunc("kytheCuEncoding",
-		func(ctx android.PackageVarContext) string { return ctx.Config().XrefCuEncoding() })
-	_ = pctx.SourcePathVariable("kytheVnames", "build/soong/vnames.json")
-	// Run it with -add-opens=java.base/java.nio=ALL-UNNAMED to avoid JDK9's warning about
-	// "Illegal reflective access by com.google.protobuf.Utf8$UnsafeProcessor ...
-	// to field java.nio.Buffer.address"
-	kytheExtract = pctx.AndroidStaticRule("kythe",
-		blueprint.RuleParams{
-			Command: `${config.ZipSyncCmd} -d $srcJarDir ` +
-				`-l $srcJarDir/list -f "*.java" $srcJars && ` +
-				`( [ ! -s $srcJarDir/list -a ! -s $out.rsp ] || ` +
-				`KYTHE_ROOT_DIRECTORY=. KYTHE_OUTPUT_FILE=$out ` +
-				`KYTHE_CORPUS=${kytheCorpus} ` +
-				`KYTHE_VNAMES=${kytheVnames} ` +
-				`KYTHE_KZIP_ENCODING=${kytheCuEncoding} ` +
-				`${config.SoongJavacWrapper} ${config.JavaCmd} ` +
-				`--add-opens=java.base/java.nio=ALL-UNNAMED ` +
-				`-jar ${config.JavaKytheExtractorJar} ` +
-				`${config.JavacHeapFlags} ${config.CommonJdkFlags} ` +
-				`$processorpath $processor $javacFlags $bootClasspath $classpath ` +
-				`-source $javaVersion -target $javaVersion ` +
-				`-d $outDir -s $annoDir @$out.rsp @$srcJarDir/list)`,
-			CommandDeps: []string{
-				"${config.JavaCmd}",
-				"${config.JavaKytheExtractorJar}",
-				"${kytheVnames}",
-				"${config.ZipSyncCmd}",
-			},
-			CommandOrderOnly: []string{"${config.SoongJavacWrapper}"},
-			Rspfile:          "$out.rsp",
-			RspfileContent:   "$in",
 		},
 		"javacFlags", "bootClasspath", "classpath", "processorpath", "processor", "srcJars", "srcJarDir",
 		"outDir", "annoDir", "javaVersion")
 
-	extractMatchingApks = pctx.StaticRule(
-		"extractMatchingApks",
-		blueprint.RuleParams{
-			Command: `rm -rf "$out" && ` +
-				`${config.ExtractApksCmd} -o "${out}" -allow-prereleased=${allow-prereleased} ` +
-				`-sdk-version=${sdk-version} -abis=${abis} ` +
-				`--screen-densities=${screen-densities} --stem=${stem} ` +
-				`-apkcerts=${apkcerts} -partition=${partition} ` +
-				`${in}`,
-			CommandDeps: []string{"${config.ExtractApksCmd}"},
-		},
-		"abis", "allow-prereleased", "screen-densities", "sdk-version", "stem", "apkcerts", "partition")
-
-	turbine, turbineRE = remoteexec.StaticRules(pctx, "turbine",
+	turbine = pctx.AndroidStaticRule("turbine",
 		blueprint.RuleParams{
 			Command: `rm -rf "$outDir" && mkdir -p "$outDir" && ` +
-				`$reTemplate${config.JavaCmd} ${config.JavaVmFlags} -jar ${config.TurbineJar} --output $out.tmp ` +
+				`${config.JavaCmd} -jar ${config.TurbineJar} --output $out.tmp ` +
 				`--temp_dir "$outDir" --sources @$out.rsp  --source_jars $srcJars ` +
 				`--javacopts ${config.CommonJdkFlags} ` +
 				`$javacFlags -source $javaVersion -target $javaVersion -- $bootClasspath $classpath && ` +
@@ -144,45 +79,25 @@ var (
 			RspfileContent: "$in",
 			Restat:         true,
 		},
-		&remoteexec.REParams{Labels: map[string]string{"type": "tool", "name": "turbine"},
-			ExecStrategy:      "${config.RETurbineExecStrategy}",
-			Inputs:            []string{"${config.TurbineJar}", "${out}.rsp", "$implicits"},
-			RSPFile:           "${out}.rsp",
-			OutputFiles:       []string{"$out.tmp"},
-			OutputDirectories: []string{"$outDir"},
-			ToolchainInputs:   []string{"${config.JavaCmd}"},
-			Platform:          map[string]string{remoteexec.PoolKey: "${config.REJavaPool}"},
-		}, []string{"javacFlags", "bootClasspath", "classpath", "srcJars", "outDir", "javaVersion"}, []string{"implicits"})
+		"javacFlags", "bootClasspath", "classpath", "srcJars", "outDir", "javaVersion")
 
-	jar, jarRE = remoteexec.StaticRules(pctx, "jar",
+	jar = pctx.AndroidStaticRule("jar",
 		blueprint.RuleParams{
-			Command:        `$reTemplate${config.SoongZipCmd} -jar -o $out @$out.rsp`,
+			Command:        `${config.SoongZipCmd} -jar -o $out @$out.rsp`,
 			CommandDeps:    []string{"${config.SoongZipCmd}"},
 			Rspfile:        "$out.rsp",
 			RspfileContent: "$jarArgs",
 		},
-		&remoteexec.REParams{
-			ExecStrategy: "${config.REJarExecStrategy}",
-			Inputs:       []string{"${config.SoongZipCmd}", "${out}.rsp"},
-			RSPFile:      "${out}.rsp",
-			OutputFiles:  []string{"$out"},
-			Platform:     map[string]string{remoteexec.PoolKey: "${config.REJavaPool}"},
-		}, []string{"jarArgs"}, nil)
+		"jarArgs")
 
-	zip, zipRE = remoteexec.StaticRules(pctx, "zip",
+	zip = pctx.AndroidStaticRule("zip",
 		blueprint.RuleParams{
 			Command:        `${config.SoongZipCmd} -o $out @$out.rsp`,
 			CommandDeps:    []string{"${config.SoongZipCmd}"},
 			Rspfile:        "$out.rsp",
 			RspfileContent: "$jarArgs",
 		},
-		&remoteexec.REParams{
-			ExecStrategy: "${config.REZipExecStrategy}",
-			Inputs:       []string{"${config.SoongZipCmd}", "${out}.rsp", "$implicits"},
-			RSPFile:      "${out}.rsp",
-			OutputFiles:  []string{"$out"},
-			Platform:     map[string]string{remoteexec.PoolKey: "${config.REJavaPool}"},
-		}, []string{"jarArgs"}, []string{"implicits"})
+		"jarArgs")
 
 	combineJar = pctx.AndroidStaticRule("combineJar",
 		blueprint.RuleParams{
@@ -193,12 +108,7 @@ var (
 
 	jarjar = pctx.AndroidStaticRule("jarjar",
 		blueprint.RuleParams{
-			Command: "${config.JavaCmd} ${config.JavaVmFlags}" +
-				// b/146418363 Enable Android specific jarjar transformer to drop compat annotations
-				// for newly repackaged classes. Dropping @UnsupportedAppUsage on repackaged classes
-				// avoids adding new hiddenapis after jarjar'ing.
-				" -DremoveAndroidCompatAnnotations=true" +
-				" -jar ${config.JarjarCmd} process $rulesFile $in $out",
+			Command:     "${config.JavaCmd} -jar ${config.JarjarCmd} process $rulesFile $in $out",
 			CommandDeps: []string{"${config.JavaCmd}", "${config.JarjarCmd}", "$rulesFile"},
 		},
 		"rulesFile")
@@ -214,7 +124,7 @@ var (
 
 	jetifier = pctx.AndroidStaticRule("jetifier",
 		blueprint.RuleParams{
-			Command:     "${config.JavaCmd}  ${config.JavaVmFlags} -jar ${config.JetifierJar} -l error -o $out -i $in",
+			Command:     "${config.JavaCmd} -jar ${config.JetifierJar} -l error -o $out -i $in",
 			CommandDeps: []string{"${config.JavaCmd}", "${config.JetifierJar}"},
 		},
 	)
@@ -234,20 +144,18 @@ var (
 func init() {
 	pctx.Import("android/soong/android")
 	pctx.Import("android/soong/java/config")
-	pctx.Import("android/soong/remoteexec")
 }
 
 type javaBuilderFlags struct {
-	javacFlags     string
-	bootClasspath  classpath
-	classpath      classpath
-	java9Classpath classpath
-	processorPath  classpath
-	processors     []string
-	systemModules  *systemModules
-	aidlFlags      string
-	aidlDeps       android.Paths
-	javaVersion    javaVersion
+	javacFlags    string
+	bootClasspath classpath
+	classpath     classpath
+	processorPath classpath
+	processor     string
+	systemModules classpath
+	aidlFlags     string
+	aidlDeps      android.Paths
+	javaVersion   string
 
 	errorProneExtraJavacFlags string
 	errorProneProcessorPath   classpath
@@ -287,115 +195,37 @@ func RunErrorProne(ctx android.ModuleContext, outputFile android.WritablePath,
 		"errorprone", "errorprone")
 }
 
-// Emits the rule to generate Xref input file (.kzip file) for the given set of source files and source jars
-// to compile with given set of builder flags, etc.
-func emitXrefRule(ctx android.ModuleContext, xrefFile android.WritablePath, idx int,
-	srcFiles, srcJars android.Paths,
-	flags javaBuilderFlags, deps android.Paths) {
-
-	deps = append(deps, srcJars...)
-	classpath := flags.classpath
-
-	var bootClasspath string
-	if flags.javaVersion.usesJavaModules() {
-		var systemModuleDeps android.Paths
-		bootClasspath, systemModuleDeps = flags.systemModules.FormJavaSystemModulesPath(ctx.Device())
-		deps = append(deps, systemModuleDeps...)
-		classpath = append(flags.java9Classpath, classpath...)
-	} else {
-		deps = append(deps, flags.bootClasspath...)
-		if len(flags.bootClasspath) == 0 && ctx.Device() {
-			// explicitly specify -bootclasspath "" if the bootclasspath is empty to
-			// ensure java does not fall back to the default bootclasspath.
-			bootClasspath = `-bootclasspath ""`
-		} else {
-			bootClasspath = flags.bootClasspath.FormJavaClassPath("-bootclasspath")
-		}
-	}
-
-	deps = append(deps, classpath...)
-	deps = append(deps, flags.processorPath...)
-
-	processor := "-proc:none"
-	if len(flags.processors) > 0 {
-		processor = "-processor " + strings.Join(flags.processors, ",")
-	}
-
-	intermediatesDir := "xref"
-	if idx >= 0 {
-		intermediatesDir += strconv.Itoa(idx)
-	}
-
-	ctx.Build(pctx,
-		android.BuildParams{
-			Rule:        kytheExtract,
-			Description: "Xref Java extractor",
-			Output:      xrefFile,
-			Inputs:      srcFiles,
-			Implicits:   deps,
-			Args: map[string]string{
-				"annoDir":       android.PathForModuleOut(ctx, intermediatesDir, "anno").String(),
-				"bootClasspath": bootClasspath,
-				"classpath":     classpath.FormJavaClassPath("-classpath"),
-				"javacFlags":    flags.javacFlags,
-				"javaVersion":   flags.javaVersion.String(),
-				"outDir":        android.PathForModuleOut(ctx, "javac", "classes.xref").String(),
-				"processorpath": flags.processorPath.FormJavaClassPath("-processorpath"),
-				"processor":     processor,
-				"srcJarDir":     android.PathForModuleOut(ctx, intermediatesDir, "srcjars.xref").String(),
-				"srcJars":       strings.Join(srcJars.Strings(), " "),
-			},
-		})
-}
-
 func TransformJavaToHeaderClasses(ctx android.ModuleContext, outputFile android.WritablePath,
 	srcFiles, srcJars android.Paths, flags javaBuilderFlags) {
 
 	var deps android.Paths
 	deps = append(deps, srcJars...)
-
-	classpath := flags.classpath
+	deps = append(deps, flags.bootClasspath...)
+	deps = append(deps, flags.classpath...)
 
 	var bootClasspath string
-	if flags.javaVersion.usesJavaModules() {
-		var systemModuleDeps android.Paths
-		bootClasspath, systemModuleDeps = flags.systemModules.FormTurbineSystemModulesPath(ctx.Device())
-		deps = append(deps, systemModuleDeps...)
-		classpath = append(flags.java9Classpath, classpath...)
+	if len(flags.bootClasspath) == 0 && ctx.Device() {
+		// explicitly specify -bootclasspath "" if the bootclasspath is empty to
+		// ensure java does not fall back to the default bootclasspath.
+		bootClasspath = `--bootclasspath ""`
 	} else {
-		deps = append(deps, flags.bootClasspath...)
-		if len(flags.bootClasspath) == 0 && ctx.Device() {
-			// explicitly specify -bootclasspath "" if the bootclasspath is empty to
-			// ensure turbine does not fall back to the default bootclasspath.
-			bootClasspath = `--bootclasspath ""`
-		} else {
-			bootClasspath = flags.bootClasspath.FormTurbineClassPath("--bootclasspath ")
-		}
+		bootClasspath = strings.Join(flags.bootClasspath.FormTurbineClasspath("--bootclasspath "), " ")
 	}
 
-	deps = append(deps, classpath...)
-	deps = append(deps, flags.processorPath...)
-
-	rule := turbine
-	args := map[string]string{
-		"javacFlags":    flags.javacFlags,
-		"bootClasspath": bootClasspath,
-		"srcJars":       strings.Join(srcJars.Strings(), " "),
-		"classpath":     classpath.FormTurbineClassPath("--classpath "),
-		"outDir":        android.PathForModuleOut(ctx, "turbine", "classes").String(),
-		"javaVersion":   flags.javaVersion.String(),
-	}
-	if ctx.Config().IsEnvTrue("RBE_TURBINE") {
-		rule = turbineRE
-		args["implicits"] = strings.Join(deps.Strings(), ",")
-	}
 	ctx.Build(pctx, android.BuildParams{
-		Rule:        rule,
+		Rule:        turbine,
 		Description: "turbine",
 		Output:      outputFile,
 		Inputs:      srcFiles,
 		Implicits:   deps,
-		Args:        args,
+		Args: map[string]string{
+			"javacFlags":    flags.javacFlags,
+			"bootClasspath": bootClasspath,
+			"srcJars":       strings.Join(srcJars.Strings(), " "),
+			"classpath":     strings.Join(flags.classpath.FormTurbineClasspath("--classpath "), " "),
+			"outDir":        android.PathForModuleOut(ctx, "turbine", "classes").String(),
+			"javaVersion":   flags.javaVersion,
+		},
 	})
 }
 
@@ -415,14 +245,10 @@ func transformJavaToClasses(ctx android.ModuleContext, outputFile android.Writab
 
 	deps = append(deps, srcJars...)
 
-	classpath := flags.classpath
-
 	var bootClasspath string
-	if flags.javaVersion.usesJavaModules() {
-		var systemModuleDeps android.Paths
-		bootClasspath, systemModuleDeps = flags.systemModules.FormJavaSystemModulesPath(ctx.Device())
-		deps = append(deps, systemModuleDeps...)
-		classpath = append(flags.java9Classpath, classpath...)
+	if flags.javaVersion == "1.9" {
+		deps = append(deps, flags.systemModules...)
+		bootClasspath = flags.systemModules.FormJavaSystemModulesPath("--system=", ctx.Device())
 	} else {
 		deps = append(deps, flags.bootClasspath...)
 		if len(flags.bootClasspath) == 0 && ctx.Device() {
@@ -434,12 +260,12 @@ func transformJavaToClasses(ctx android.ModuleContext, outputFile android.Writab
 		}
 	}
 
-	deps = append(deps, classpath...)
+	deps = append(deps, flags.classpath...)
 	deps = append(deps, flags.processorPath...)
 
 	processor := "-proc:none"
-	if len(flags.processors) > 0 {
-		processor = "-processor " + strings.Join(flags.processors, ",")
+	if flags.processor != "" {
+		processor = "-processor " + flags.processor
 	}
 
 	srcJarDir := "srcjars"
@@ -451,12 +277,8 @@ func transformJavaToClasses(ctx android.ModuleContext, outputFile android.Writab
 		outDir = filepath.Join(shardDir, outDir)
 		annoDir = filepath.Join(shardDir, annoDir)
 	}
-	rule := javac
-	if ctx.Config().IsEnvTrue("RBE_JAVAC") {
-		rule = javacRE
-	}
 	ctx.Build(pctx, android.BuildParams{
-		Rule:        rule,
+		Rule:        javac,
 		Description: desc,
 		Output:      outputFile,
 		Inputs:      srcFiles,
@@ -464,14 +286,14 @@ func transformJavaToClasses(ctx android.ModuleContext, outputFile android.Writab
 		Args: map[string]string{
 			"javacFlags":    flags.javacFlags,
 			"bootClasspath": bootClasspath,
-			"classpath":     classpath.FormJavaClassPath("-classpath"),
+			"classpath":     flags.classpath.FormJavaClassPath("-classpath"),
 			"processorpath": flags.processorPath.FormJavaClassPath("-processorpath"),
 			"processor":     processor,
 			"srcJars":       strings.Join(srcJars.Strings(), " "),
 			"srcJarDir":     android.PathForModuleOut(ctx, intermediatesDir, srcJarDir).String(),
 			"outDir":        android.PathForModuleOut(ctx, intermediatesDir, outDir).String(),
 			"annoDir":       android.PathForModuleOut(ctx, intermediatesDir, annoDir).String(),
-			"javaVersion":   flags.javaVersion.String(),
+			"javaVersion":   flags.javaVersion,
 		},
 	})
 }
@@ -479,12 +301,8 @@ func transformJavaToClasses(ctx android.ModuleContext, outputFile android.Writab
 func TransformResourcesToJar(ctx android.ModuleContext, outputFile android.WritablePath,
 	jarArgs []string, deps android.Paths) {
 
-	rule := jar
-	if ctx.Config().IsEnvTrue("RBE_JAR") {
-		rule = jarRE
-	}
 	ctx.Build(pctx, android.BuildParams{
-		Rule:        rule,
+		Rule:        jar,
 		Description: "jar",
 		Output:      outputFile,
 		Implicits:   deps,
@@ -591,28 +409,35 @@ func TransformZipAlign(ctx android.ModuleContext, outputFile android.WritablePat
 	})
 }
 
-type classpath android.Paths
+type classpath []android.Path
 
-func (x *classpath) formJoinedClassPath(optName string, sep string) string {
+func (x *classpath) FormJavaClassPath(optName string) string {
 	if optName != "" && !strings.HasSuffix(optName, "=") && !strings.HasSuffix(optName, " ") {
 		optName += " "
 	}
 	if len(*x) > 0 {
-		return optName + strings.Join(x.Strings(), sep)
+		return optName + strings.Join(x.Strings(), ":")
 	} else {
 		return ""
 	}
 }
-func (x *classpath) FormJavaClassPath(optName string) string {
-	return x.formJoinedClassPath(optName, ":")
+
+// Returns a --system argument in the form javac expects with -source 1.9.  If forceEmpty is true,
+// returns --system=none if the list is empty to ensure javac does not fall back to the default
+// system modules.
+func (x *classpath) FormJavaSystemModulesPath(optName string, forceEmpty bool) string {
+	if len(*x) > 1 {
+		panic("more than one system module")
+	} else if len(*x) == 1 {
+		return optName + strings.TrimSuffix((*x)[0].String(), "lib/modules")
+	} else if forceEmpty {
+		return optName + "none"
+	} else {
+		return ""
+	}
 }
 
-func (x *classpath) FormTurbineClassPath(optName string) string {
-	return x.formJoinedClassPath(optName, " ")
-}
-
-// FormRepeatedClassPath returns a list of arguments with the given optName prefixed to each element of the classpath.
-func (x *classpath) FormRepeatedClassPath(optName string) []string {
+func (x *classpath) FormTurbineClasspath(optName string) []string {
 	if x == nil || *x == nil {
 		return nil
 	}
@@ -638,35 +463,4 @@ func (x *classpath) Strings() []string {
 		ret[i] = path.String()
 	}
 	return ret
-}
-
-type systemModules struct {
-	dir  android.Path
-	deps android.Paths
-}
-
-// Returns a --system argument in the form javac expects with -source 1.9 and the list of files to
-// depend on.  If forceEmpty is true, returns --system=none if the list is empty to ensure javac
-// does not fall back to the default system modules.
-func (x *systemModules) FormJavaSystemModulesPath(forceEmpty bool) (string, android.Paths) {
-	if x != nil {
-		return "--system=" + x.dir.String(), x.deps
-	} else if forceEmpty {
-		return "--system=none", nil
-	} else {
-		return "", nil
-	}
-}
-
-// Returns a --system argument in the form turbine expects with -source 1.9 and the list of files to
-// depend on.  If forceEmpty is true, returns --bootclasspath "" if the list is empty to ensure turbine
-// does not fall back to the default bootclasspath.
-func (x *systemModules) FormTurbineSystemModulesPath(forceEmpty bool) (string, android.Paths) {
-	if x != nil {
-		return "--system " + x.dir.String(), x.deps
-	} else if forceEmpty {
-		return `--bootclasspath ""`, nil
-	} else {
-		return "", nil
-	}
 }

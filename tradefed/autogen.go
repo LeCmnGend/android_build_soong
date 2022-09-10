@@ -24,8 +24,6 @@ import (
 	"android/soong/android"
 )
 
-const test_xml_indent = "    "
-
 func getTestConfigTemplate(ctx android.ModuleContext, prop *string) android.OptionalPath {
 	return ctx.ExpandOptionalSource(prop, "test_config_template")
 }
@@ -40,20 +38,20 @@ func getTestConfig(ctx android.ModuleContext, prop *string) android.Path {
 }
 
 var autogenTestConfig = pctx.StaticRule("autogenTestConfig", blueprint.RuleParams{
-	Command:     "sed 's&{MODULE}&${name}&g;s&{EXTRA_CONFIGS}&'${extraConfigs}'&g;s&{OUTPUT_FILENAME}&'${outputFileName}'&g' $template > $out",
+	Command:     "sed 's&{MODULE}&${name}&g;s&{EXTRA_CONFIGS}&'${extraConfigs}'&g' $template > $out",
 	CommandDeps: []string{"$template"},
-}, "name", "template", "extraConfigs", "outputFileName")
+}, "name", "template", "extraConfigs")
 
-func testConfigPath(ctx android.ModuleContext, prop *string, testSuites []string, autoGenConfig *bool, testConfigTemplateProp *string) (path android.Path, autogenPath android.WritablePath) {
-	p := getTestConfig(ctx, prop)
-	if !Bool(autoGenConfig) && p != nil {
+func testConfigPath(ctx android.ModuleContext, prop *string, testSuites []string) (path android.Path, autogenPath android.WritablePath) {
+	if p := getTestConfig(ctx, prop); p != nil {
 		return p, nil
-	} else if BoolDefault(autoGenConfig, true) && (!android.InList("cts", testSuites) || testConfigTemplateProp != nil) {
+	} else if !android.InList("cts", testSuites) {
 		outputFile := android.PathForModuleOut(ctx, ctx.ModuleName()+".config")
 		return nil, outputFile
 	} else {
 		// CTS modules can be used for test data, so test config files must be
-		// explicitly created using AndroidTest.xml or test_config_template.
+		// explicitly created using AndroidTest.xml
+		// TODO(b/112602712): remove the path check
 		return nil, nil
 	}
 }
@@ -64,63 +62,31 @@ type Config interface {
 
 type Option struct {
 	Name  string
-	Key   string
 	Value string
 }
 
 var _ Config = Option{}
 
 func (o Option) Config() string {
-	if o.Key != "" {
-		return fmt.Sprintf(`<option name="%s" key="%s" value="%s" />`, o.Name, o.Key, o.Value)
-	}
 	return fmt.Sprintf(`<option name="%s" value="%s" />`, o.Name, o.Value)
 }
 
-// It can be a template of object or target_preparer.
-type Object struct {
-	// Set it as a target_preparer if object type == "target_preparer".
-	Type    string
-	Class   string
-	Options []Option
+type Preparer struct {
+	Class string
 }
 
-var _ Config = Object{}
+var _ Config = Preparer{}
 
-func (ob Object) Config() string {
-	var optionStrings []string
-	for _, option := range ob.Options {
-		optionStrings = append(optionStrings, option.Config())
-	}
-	var options string
-	if len(ob.Options) == 0 {
-		options = ""
-	} else {
-		optionDelimiter := fmt.Sprintf("\\n%s%s", test_xml_indent, test_xml_indent)
-		options = optionDelimiter + strings.Join(optionStrings, optionDelimiter)
-	}
-	if ob.Type == "target_preparer" {
-		return fmt.Sprintf(`<target_preparer class="%s">%s\n%s</target_preparer>`, ob.Class, options, test_xml_indent)
-	} else {
-		return fmt.Sprintf(`<object type="%s" class="%s">%s\n%s</object>`, ob.Type, ob.Class, options, test_xml_indent)
-	}
-
+func (p Preparer) Config() string {
+	return fmt.Sprintf(`<target_preparer class="%s" />`, p.Class)
 }
 
 func autogenTemplate(ctx android.ModuleContext, output android.WritablePath, template string, configs []Config) {
-	autogenTemplateWithNameAndOutputFile(ctx, ctx.ModuleName(), output, template, configs, "")
-}
-
-func autogenTemplateWithName(ctx android.ModuleContext, name string, output android.WritablePath, template string, configs []Config) {
-	autogenTemplateWithNameAndOutputFile(ctx, ctx.ModuleName(), output, template, configs, "")
-}
-
-func autogenTemplateWithNameAndOutputFile(ctx android.ModuleContext, name string, output android.WritablePath, template string, configs []Config, outputFileName string) {
 	var configStrings []string
 	for _, config := range configs {
 		configStrings = append(configStrings, config.Config())
 	}
-	extraConfigs := strings.Join(configStrings, fmt.Sprintf("\\n%s", test_xml_indent))
+	extraConfigs := strings.Join(configStrings, "\n        ")
 	extraConfigs = proptools.NinjaAndShellEscape(extraConfigs)
 
 	ctx.Build(pctx, android.BuildParams{
@@ -128,17 +94,16 @@ func autogenTemplateWithNameAndOutputFile(ctx android.ModuleContext, name string
 		Description: "test config",
 		Output:      output,
 		Args: map[string]string{
-			"name":           name,
-			"template":       template,
-			"extraConfigs":   extraConfigs,
-			"outputFileName": outputFileName,
+			"name":         ctx.ModuleName(),
+			"template":     template,
+			"extraConfigs": extraConfigs,
 		},
 	})
 }
 
 func AutoGenNativeTestConfig(ctx android.ModuleContext, testConfigProp *string,
-	testConfigTemplateProp *string, testSuites []string, config []Config, autoGenConfig *bool) android.Path {
-	path, autogenPath := testConfigPath(ctx, testConfigProp, testSuites, autoGenConfig, testConfigTemplateProp)
+	testConfigTemplateProp *string, testSuites []string, config []Config) android.Path {
+	path, autogenPath := testConfigPath(ctx, testConfigProp, testSuites)
 	if autogenPath != nil {
 		templatePath := getTestConfigTemplate(ctx, testConfigTemplateProp)
 		if templatePath.Valid() {
@@ -155,24 +120,9 @@ func AutoGenNativeTestConfig(ctx android.ModuleContext, testConfigProp *string,
 	return path
 }
 
-func AutoGenShellTestConfig(ctx android.ModuleContext, testConfigProp *string,
-	testConfigTemplateProp *string, testSuites []string, config []Config, autoGenConfig *bool, outputFileName string) android.Path {
-	path, autogenPath := testConfigPath(ctx, testConfigProp, testSuites, autoGenConfig, testConfigTemplateProp)
-	if autogenPath != nil {
-		templatePath := getTestConfigTemplate(ctx, testConfigTemplateProp)
-		if templatePath.Valid() {
-			autogenTemplateWithNameAndOutputFile(ctx, ctx.ModuleName(), autogenPath, templatePath.String(), config, outputFileName)
-		} else {
-			autogenTemplateWithNameAndOutputFile(ctx, ctx.ModuleName(), autogenPath, "${ShellTestConfigTemplate}", config, outputFileName)
-		}
-		return autogenPath
-	}
-	return path
-}
-
 func AutoGenNativeBenchmarkTestConfig(ctx android.ModuleContext, testConfigProp *string,
-	testConfigTemplateProp *string, testSuites []string, configs []Config, autoGenConfig *bool) android.Path {
-	path, autogenPath := testConfigPath(ctx, testConfigProp, testSuites, autoGenConfig, testConfigTemplateProp)
+	testConfigTemplateProp *string, testSuites []string, configs []Config) android.Path {
+	path, autogenPath := testConfigPath(ctx, testConfigProp, testSuites)
 	if autogenPath != nil {
 		templatePath := getTestConfigTemplate(ctx, testConfigTemplateProp)
 		if templatePath.Valid() {
@@ -185,9 +135,8 @@ func AutoGenNativeBenchmarkTestConfig(ctx android.ModuleContext, testConfigProp 
 	return path
 }
 
-func AutoGenJavaTestConfig(ctx android.ModuleContext, testConfigProp *string, testConfigTemplateProp *string,
-	testSuites []string, autoGenConfig *bool) android.Path {
-	path, autogenPath := testConfigPath(ctx, testConfigProp, testSuites, autoGenConfig, testConfigTemplateProp)
+func AutoGenJavaTestConfig(ctx android.ModuleContext, testConfigProp *string, testConfigTemplateProp *string, testSuites []string) android.Path {
+	path, autogenPath := testConfigPath(ctx, testConfigProp, testSuites)
 	if autogenPath != nil {
 		templatePath := getTestConfigTemplate(ctx, testConfigTemplateProp)
 		if templatePath.Valid() {
@@ -205,9 +154,9 @@ func AutoGenJavaTestConfig(ctx android.ModuleContext, testConfigProp *string, te
 }
 
 func AutoGenPythonBinaryHostTestConfig(ctx android.ModuleContext, testConfigProp *string,
-	testConfigTemplateProp *string, testSuites []string, autoGenConfig *bool) android.Path {
+	testConfigTemplateProp *string, testSuites []string) android.Path {
 
-	path, autogenPath := testConfigPath(ctx, testConfigProp, testSuites, autoGenConfig, testConfigTemplateProp)
+	path, autogenPath := testConfigPath(ctx, testConfigProp, testSuites)
 	if autogenPath != nil {
 		templatePath := getTestConfigTemplate(ctx, testConfigTemplateProp)
 		if templatePath.Valid() {
@@ -220,64 +169,34 @@ func AutoGenPythonBinaryHostTestConfig(ctx android.ModuleContext, testConfigProp
 	return path
 }
 
-func AutoGenRustTestConfig(ctx android.ModuleContext, name string, testConfigProp *string,
-	testConfigTemplateProp *string, testSuites []string, autoGenConfig *bool) android.Path {
-	path, autogenPath := testConfigPath(ctx, testConfigProp, testSuites, autoGenConfig, testConfigTemplateProp)
-	if autogenPath != nil {
-		templatePathString := "${RustHostTestConfigTemplate}"
-		if ctx.Device() {
-			templatePathString = "${RustDeviceTestConfigTemplate}"
-		}
-		templatePath := getTestConfigTemplate(ctx, testConfigTemplateProp)
-		if templatePath.Valid() {
-			templatePathString = templatePath.String()
-		}
-		autogenTemplateWithName(ctx, name, autogenPath, templatePathString, nil)
-		return autogenPath
-	}
-	return path
-}
-
 var autogenInstrumentationTest = pctx.StaticRule("autogenInstrumentationTest", blueprint.RuleParams{
-	Command: "${AutoGenTestConfigScript} $out $in ${EmptyTestConfig} $template ${extraConfigs}",
+	Command: "${AutoGenTestConfigScript} $out $in ${EmptyTestConfig} $template",
 	CommandDeps: []string{
 		"${AutoGenTestConfigScript}",
 		"${EmptyTestConfig}",
 		"$template",
 	},
-}, "name", "template", "extraConfigs")
+}, "name", "template")
 
-func AutoGenInstrumentationTestConfig(ctx android.ModuleContext, testConfigProp *string,
-	testConfigTemplateProp *string, manifest android.Path, testSuites []string, autoGenConfig *bool, configs []Config) android.Path {
-	path, autogenPath := testConfigPath(ctx, testConfigProp, testSuites, autoGenConfig, testConfigTemplateProp)
-	var configStrings []string
+func AutoGenInstrumentationTestConfig(ctx android.ModuleContext, testConfigProp *string, testConfigTemplateProp *string, manifest android.Path, testSuites []string) android.Path {
+	path, autogenPath := testConfigPath(ctx, testConfigProp, testSuites)
 	if autogenPath != nil {
 		template := "${InstrumentationTestConfigTemplate}"
 		moduleTemplate := getTestConfigTemplate(ctx, testConfigTemplateProp)
 		if moduleTemplate.Valid() {
 			template = moduleTemplate.String()
 		}
-		for _, config := range configs {
-			configStrings = append(configStrings, config.Config())
-		}
-		extraConfigs := strings.Join(configStrings, fmt.Sprintf("\\n%s", test_xml_indent))
-		extraConfigs = fmt.Sprintf("--extra-configs '%s'", extraConfigs)
-
 		ctx.Build(pctx, android.BuildParams{
 			Rule:        autogenInstrumentationTest,
 			Description: "test config",
 			Input:       manifest,
 			Output:      autogenPath,
 			Args: map[string]string{
-				"name":         ctx.ModuleName(),
-				"template":     template,
-				"extraConfigs": extraConfigs,
+				"name":     ctx.ModuleName(),
+				"template": template,
 			},
 		})
 		return autogenPath
 	}
 	return path
 }
-
-var Bool = proptools.Bool
-var BoolDefault = proptools.BoolDefault

@@ -15,7 +15,7 @@
 package build
 
 import (
-	"fmt"
+	"io/ioutil"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -24,21 +24,16 @@ import (
 	"time"
 
 	"android/soong/shared"
-
-	"github.com/golang/protobuf/proto"
-
-	smpb "android/soong/ui/metrics/metrics_proto"
 )
 
 type Config struct{ *configImpl }
 
 type configImpl struct {
 	// From the environment
-	arguments     []string
-	goma          bool
-	environ       *Environment
-	distDir       string
-	buildDateTime string
+	arguments []string
+	goma      bool
+	environ   *Environment
+	distDir   string
 
 	// From the arguments
 	parallel   int
@@ -61,8 +56,8 @@ type configImpl struct {
 	pdkBuild bool
 
 	brokenDupRules     bool
+	brokenPhonyTargets bool
 	brokenUsesNetwork  bool
-	brokenNinjaEnvVars []string
 
 	pathReplaced bool
 }
@@ -155,7 +150,6 @@ func NewConfig(ctx Context, args ...string) Config {
 		"DIST_DIR",
 
 		// Variables that have caused problems in the past
-		"BASH_ENV",
 		"CDPATH",
 		"DISPLAY",
 		"GREP_OPTIONS",
@@ -186,21 +180,10 @@ func NewConfig(ctx Context, args ...string) Config {
 		"EMPTY_NINJA_FILE",
 	)
 
-	if ret.UseGoma() || ret.ForceUseGoma() {
-		ctx.Println("Goma for Android has been deprecated and replaced with RBE. See go/rbe_for_android for instructions on how to use RBE.")
-		ctx.Fatalln("USE_GOMA / FORCE_USE_GOMA flag is no longer supported.")
-	}
-
 	// Tell python not to spam the source tree with .pyc files.
 	ret.environ.Set("PYTHONDONTWRITEBYTECODE", "1")
 
-	tmpDir := absPath(ctx, ret.TempDir())
-	ret.environ.Set("TMPDIR", tmpDir)
-
-	// Always set ASAN_SYMBOLIZER_PATH so that ASAN-based tools can symbolize any crashes
-	symbolizerPath := filepath.Join("prebuilts/clang/host", ret.HostPrebuiltTag(),
-		"llvm-binutils-stable/llvm-symbolizer")
-	ret.environ.Set("ASAN_SYMBOLIZER_PATH", absPath(ctx, symbolizerPath))
+	ret.environ.Set("TMPDIR", absPath(ctx, ret.TempDir()))
 
 	// Precondition: the current directory is the top of the source tree
 	checkTopDir(ctx)
@@ -232,15 +215,11 @@ func NewConfig(ctx Context, args ...string) Config {
 	// Configure Java-related variables, including adding it to $PATH
 	java8Home := filepath.Join("prebuilts/jdk/jdk8", ret.HostPrebuiltTag())
 	java9Home := filepath.Join("prebuilts/jdk/jdk9", ret.HostPrebuiltTag())
-	java11Home := filepath.Join("prebuilts/jdk/jdk11", ret.HostPrebuiltTag())
 	javaHome := func() string {
 		if override, ok := ret.environ.Get("OVERRIDE_ANDROID_JAVA_HOME"); ok {
 			return override
 		}
-		if toolchain11, ok := ret.environ.Get("EXPERIMENTAL_USE_OPENJDK11_TOOLCHAIN"); ok && toolchain11 != "true" {
-			ctx.Fatalln("The environment variable EXPERIMENTAL_USE_OPENJDK11_TOOLCHAIN is no longer supported. An OpenJDK 11 toolchain is now the global default.")
-		}
-		return java11Home
+		return java9Home
 	}()
 	absJavaHome := absPath(ctx, javaHome)
 
@@ -250,55 +229,37 @@ func NewConfig(ctx Context, args ...string) Config {
 	if path, ok := ret.environ.Get("PATH"); ok && path != "" {
 		newPath = append(newPath, path)
 	}
-
 	ret.environ.Unset("OVERRIDE_ANDROID_JAVA_HOME")
 	ret.environ.Set("JAVA_HOME", absJavaHome)
 	ret.environ.Set("ANDROID_JAVA_HOME", javaHome)
 	ret.environ.Set("ANDROID_JAVA8_HOME", java8Home)
 	ret.environ.Set("ANDROID_JAVA9_HOME", java9Home)
-	ret.environ.Set("ANDROID_JAVA11_HOME", java11Home)
 	ret.environ.Set("PATH", strings.Join(newPath, string(filepath.ListSeparator)))
 
 	outDir := ret.OutDir()
 	buildDateTimeFile := filepath.Join(outDir, "build_date.txt")
+	var content string
 	if buildDateTime, ok := ret.environ.Get("BUILD_DATETIME"); ok && buildDateTime != "" {
-		ret.buildDateTime = buildDateTime
+		content = buildDateTime
 	} else {
-		ret.buildDateTime = strconv.FormatInt(time.Now().Unix(), 10)
+		content = strconv.FormatInt(time.Now().Unix(), 10)
 	}
-
+	if ctx.Metrics != nil {
+		ctx.Metrics.SetBuildDateTime(content)
+	}
+	err := ioutil.WriteFile(buildDateTimeFile, []byte(content), 0777)
+	if err != nil {
+		ctx.Fatalln("Failed to write BUILD_DATETIME to file:", err)
+	}
 	ret.environ.Set("BUILD_DATETIME_FILE", buildDateTimeFile)
 
-	if ret.UseRBE() {
-		for k, v := range getRBEVars(ctx, Config{ret}) {
-			ret.environ.Set(k, v)
-		}
-	}
-
-	c := Config{ret}
-	storeConfigMetrics(ctx, c)
-	return c
+	return Config{ret}
 }
 
 // NewBuildActionConfig returns a build configuration based on the build action. The arguments are
 // processed based on the build action and extracts any arguments that belongs to the build action.
 func NewBuildActionConfig(action BuildAction, dir string, ctx Context, args ...string) Config {
 	return NewConfig(ctx, getConfigArgs(action, dir, ctx, args)...)
-}
-
-// storeConfigMetrics selects a set of configuration information and store in
-// the metrics system for further analysis.
-func storeConfigMetrics(ctx Context, config Config) {
-	if ctx.Metrics == nil {
-		return
-	}
-
-	b := &smpb.BuildConfig{
-		ForceUseGoma: proto.Bool(config.ForceUseGoma()),
-		UseGoma:      proto.Bool(config.UseGoma()),
-		UseRbe:       proto.Bool(config.UseRBE()),
-	}
-	ctx.Metrics.BuildConfig(b)
 }
 
 // getConfigArgs processes the command arguments based on the build action and creates a set of new
@@ -753,50 +714,8 @@ func (c *configImpl) Parallel() int {
 	return c.parallel
 }
 
-func (c *configImpl) HighmemParallel() int {
-	if i, ok := c.environ.GetInt("NINJA_HIGHMEM_NUM_JOBS"); ok {
-		return i
-	}
-
-	const minMemPerHighmemProcess = 8 * 1024 * 1024 * 1024
-	parallel := c.Parallel()
-	if c.UseRemoteBuild() {
-		// Ninja doesn't support nested pools, and when remote builds are enabled the total ninja parallelism
-		// is set very high (i.e. 500).  Using a large value here would cause the total number of running jobs
-		// to be the sum of the sizes of the local and highmem pools, which will cause extra CPU contention.
-		// Return 1/16th of the size of the local pool, rounding up.
-		return (parallel + 15) / 16
-	} else if c.totalRAM == 0 {
-		// Couldn't detect the total RAM, don't restrict highmem processes.
-		return parallel
-	} else if c.totalRAM <= 16*1024*1024*1024 {
-		// Less than 16GB of ram, restrict to 1 highmem processes
-		return 1
-	} else if c.totalRAM <= 32*1024*1024*1024 {
-		// Less than 32GB of ram, restrict to 2 highmem processes
-		return 2
-	} else if p := int(c.totalRAM / minMemPerHighmemProcess); p < parallel {
-		// If less than 8GB total RAM per process, reduce the number of highmem processes
-		return p
-	}
-	// No restriction on highmem processes
-	return parallel
-}
-
 func (c *configImpl) TotalRAM() uint64 {
 	return c.totalRAM
-}
-
-// ForceUseGoma determines whether we should override Goma deprecation
-// and use Goma for the current build or not.
-func (c *configImpl) ForceUseGoma() bool {
-	if v, ok := c.environ.Get("FORCE_USE_GOMA"); ok {
-		v = strings.TrimSpace(v)
-		if v != "" && v != "false" {
-			return true
-		}
-	}
-	return false
 }
 
 func (c *configImpl) UseGoma() bool {
@@ -823,112 +742,14 @@ func (c *configImpl) StartGoma() bool {
 	return true
 }
 
-func (c *configImpl) UseRBE() bool {
-	if v, ok := c.environ.Get("USE_RBE"); ok {
-		v = strings.TrimSpace(v)
-		if v != "" && v != "false" {
-			return true
-		}
-	}
-	return false
-}
-
-func (c *configImpl) StartRBE() bool {
-	if !c.UseRBE() {
-		return false
-	}
-
-	if v, ok := c.environ.Get("NOSTART_RBE"); ok {
-		v = strings.TrimSpace(v)
-		if v != "" && v != "false" {
-			return false
-		}
-	}
-	return true
-}
-
-func (c *configImpl) logDir() string {
-	if c.Dist() {
-		return filepath.Join(c.DistDir(), "logs")
-	}
-	return c.OutDir()
-}
-
-func (c *configImpl) rbeStatsOutputDir() string {
-	for _, f := range []string{"RBE_output_dir", "FLAG_output_dir"} {
-		if v, ok := c.environ.Get(f); ok {
-			return v
-		}
-	}
-	return c.logDir()
-}
-
-func (c *configImpl) rbeLogPath() string {
-	for _, f := range []string{"RBE_log_path", "FLAG_log_path"} {
-		if v, ok := c.environ.Get(f); ok {
-			return v
-		}
-	}
-	return fmt.Sprintf("text://%v/reproxy_log.txt", c.logDir())
-}
-
-func (c *configImpl) rbeExecRoot() string {
-	for _, f := range []string{"RBE_exec_root", "FLAG_exec_root"} {
-		if v, ok := c.environ.Get(f); ok {
-			return v
-		}
-	}
-	wd, err := os.Getwd()
-	if err != nil {
-		return ""
-	}
-	return wd
-}
-
-func (c *configImpl) rbeDir() string {
-	if v, ok := c.environ.Get("RBE_DIR"); ok {
-		return v
-	}
-	return "prebuilts/remoteexecution-client/live/"
-}
-
-func (c *configImpl) rbeReproxy() string {
-	for _, f := range []string{"RBE_re_proxy", "FLAG_re_proxy"} {
-		if v, ok := c.environ.Get(f); ok {
-			return v
-		}
-	}
-	return filepath.Join(c.rbeDir(), "reproxy")
-}
-
-func (c *configImpl) rbeAuth() (string, string) {
-	credFlags := []string{"use_application_default_credentials", "use_gce_credentials", "credential_file"}
-	for _, cf := range credFlags {
-		for _, f := range []string{"RBE_" + cf, "FLAG_" + cf} {
-			if v, ok := c.environ.Get(f); ok {
-				v = strings.TrimSpace(v)
-				if v != "" && v != "false" && v != "0" {
-					return "RBE_" + cf, v
-				}
-			}
-		}
-	}
-	return "RBE_use_application_default_credentials", "true"
-}
-
-func (c *configImpl) UseRemoteBuild() bool {
-	return c.UseGoma() || c.UseRBE()
-}
-
 // RemoteParallel controls how many remote jobs (i.e., commands which contain
 // gomacc) are run in parallel.  Note the parallelism of all other jobs is
 // still limited by Parallel()
 func (c *configImpl) RemoteParallel() int {
-	if !c.UseRemoteBuild() {
-		return 0
-	}
-	if i, ok := c.environ.GetInt("NINJA_REMOTE_NUM_JOBS"); ok {
-		return i
+	if v, ok := c.environ.Get("NINJA_REMOTE_NUM_JOBS"); ok {
+		if i, err := strconv.Atoi(v); err == nil {
+			return i
+		}
 	}
 	return 500
 }
@@ -1043,20 +864,20 @@ func (c *configImpl) BuildBrokenDupRules() bool {
 	return c.brokenDupRules
 }
 
+func (c *configImpl) SetBuildBrokenPhonyTargets(val bool) {
+	c.brokenPhonyTargets = val
+}
+
+func (c *configImpl) BuildBrokenPhonyTargets() bool {
+	return c.brokenPhonyTargets
+}
+
 func (c *configImpl) SetBuildBrokenUsesNetwork(val bool) {
 	c.brokenUsesNetwork = val
 }
 
 func (c *configImpl) BuildBrokenUsesNetwork() bool {
 	return c.brokenUsesNetwork
-}
-
-func (c *configImpl) SetBuildBrokenNinjaUsesEnvVars(val []string) {
-	c.brokenNinjaEnvVars = val
-}
-
-func (c *configImpl) BuildBrokenNinjaUsesEnvVars() []string {
-	return c.brokenNinjaEnvVars
 }
 
 func (c *configImpl) SetTargetDeviceDir(dir string) {
@@ -1073,15 +894,4 @@ func (c *configImpl) SetPdkBuild(pdk bool) {
 
 func (c *configImpl) IsPdkBuild() bool {
 	return c.pdkBuild
-}
-
-func (c *configImpl) BuildDateTime() string {
-	return c.buildDateTime
-}
-
-func (c *configImpl) MetricsUploaderApp() string {
-	if p, ok := c.environ.Get("ANDROID_ENABLE_METRICS_UPLOAD"); ok {
-		return p
-	}
-	return ""
 }

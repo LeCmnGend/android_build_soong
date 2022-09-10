@@ -17,18 +17,12 @@ package cc
 import (
 	"fmt"
 	"path/filepath"
-	"regexp"
-	"strconv"
 	"strings"
 
 	"github.com/google/blueprint/proptools"
 
 	"android/soong/android"
 	"android/soong/cc/config"
-)
-
-var (
-	allowedManualInterfacePaths = []string{"vendor/", "hardware/"}
 )
 
 // This file contains the basic C/C++/assembly to .o compliation steps
@@ -62,6 +56,9 @@ type BaseCompilerProperties struct {
 	// list of module-specific flags that will be used for .S compiles when
 	// compiling with clang
 	Clang_asflags []string `android:"arch_variant"`
+
+	// list of module-specific flags that will be used for .y and .yy compiles
+	Yaccflags []string
 
 	// the instruction set architecture to use to compile the C/C++
 	// module.
@@ -105,8 +102,6 @@ type BaseCompilerProperties struct {
 
 	// if set to false, use -std=c++* instead of -std=gnu++*
 	Gnu_extensions *bool
-
-	Yacc *YaccProperties
 
 	Aidl struct {
 		// list of directories that will be added to the aidl include paths.
@@ -176,9 +171,6 @@ type BaseCompilerProperties struct {
 
 	// Build and link with OpenMP
 	Openmp *bool `android:"arch_variant"`
-
-	// Adds __ANDROID_APEX_<APEX_MODULE_NAME>__ macro defined for apex variants in addition to __ANDROID_APEX__
-	Use_apex_name_macro *bool
 }
 
 func NewBaseCompiler() *baseCompiler {
@@ -234,6 +226,11 @@ func (compiler *baseCompiler) compilerDeps(ctx DepsContext, deps Deps) Deps {
 		deps = protoDeps(ctx, deps, &compiler.Proto, Bool(compiler.Properties.Proto.Static))
 	}
 
+	if compiler.hasSrcExt(".sysprop") {
+		deps.HeaderLibs = append(deps.HeaderLibs, "libbase_headers")
+		deps.SharedLibs = append(deps.SharedLibs, "liblog")
+	}
+
 	if Bool(compiler.Properties.Openmp) {
 		deps.StaticLibs = append(deps.StaticLibs, "libomp")
 	}
@@ -244,7 +241,12 @@ func (compiler *baseCompiler) compilerDeps(ctx DepsContext, deps Deps) Deps {
 // Return true if the module is in the WarningAllowedProjects.
 func warningsAreAllowed(subdir string) bool {
 	subdir += "/"
-	return android.HasAnyPrefix(subdir, config.WarningAllowedProjects)
+	for _, prefix := range config.WarningAllowedProjects {
+		if strings.HasPrefix(subdir, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func addToModuleList(ctx ModuleContext, key android.OnceKey, module string) {
@@ -255,7 +257,6 @@ func addToModuleList(ctx ModuleContext, key android.OnceKey, module string) {
 // per-target values, module type values, and per-module Blueprints properties
 func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags, deps PathDeps) Flags {
 	tc := ctx.toolchain()
-	modulePath := android.PathForModuleSrc(ctx).String()
 
 	compiler.srcsBeforeGen = android.PathsForModuleSrcExcludes(ctx, compiler.Properties.Srcs, compiler.Properties.Exclude_srcs)
 	compiler.srcsBeforeGen = append(compiler.srcsBeforeGen, deps.GeneratedSources...)
@@ -269,32 +270,31 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags, deps
 
 	esc := proptools.NinjaAndShellEscapeList
 
-	flags.Local.CFlags = append(flags.Local.CFlags, esc(compiler.Properties.Cflags)...)
-	flags.Local.CppFlags = append(flags.Local.CppFlags, esc(compiler.Properties.Cppflags)...)
-	flags.Local.ConlyFlags = append(flags.Local.ConlyFlags, esc(compiler.Properties.Conlyflags)...)
-	flags.Local.AsFlags = append(flags.Local.AsFlags, esc(compiler.Properties.Asflags)...)
-	flags.Local.YasmFlags = append(flags.Local.YasmFlags, esc(compiler.Properties.Asflags)...)
-
-	flags.Yacc = compiler.Properties.Yacc
+	flags.CFlags = append(flags.CFlags, esc(compiler.Properties.Cflags)...)
+	flags.CppFlags = append(flags.CppFlags, esc(compiler.Properties.Cppflags)...)
+	flags.ConlyFlags = append(flags.ConlyFlags, esc(compiler.Properties.Conlyflags)...)
+	flags.AsFlags = append(flags.AsFlags, esc(compiler.Properties.Asflags)...)
+	flags.YasmFlags = append(flags.YasmFlags, esc(compiler.Properties.Asflags)...)
+	flags.YaccFlags = append(flags.YaccFlags, esc(compiler.Properties.Yaccflags)...)
 
 	// Include dir cflags
 	localIncludeDirs := android.PathsForModuleSrc(ctx, compiler.Properties.Local_include_dirs)
 	if len(localIncludeDirs) > 0 {
 		f := includeDirsToFlags(localIncludeDirs)
-		flags.Local.CommonFlags = append(flags.Local.CommonFlags, f)
-		flags.Local.YasmFlags = append(flags.Local.YasmFlags, f)
+		flags.GlobalFlags = append(flags.GlobalFlags, f)
+		flags.YasmFlags = append(flags.YasmFlags, f)
 	}
 	rootIncludeDirs := android.PathsForSource(ctx, compiler.Properties.Include_dirs)
 	if len(rootIncludeDirs) > 0 {
 		f := includeDirsToFlags(rootIncludeDirs)
-		flags.Local.CommonFlags = append(flags.Local.CommonFlags, f)
-		flags.Local.YasmFlags = append(flags.Local.YasmFlags, f)
+		flags.GlobalFlags = append(flags.GlobalFlags, f)
+		flags.YasmFlags = append(flags.YasmFlags, f)
 	}
 
 	if compiler.Properties.Include_build_directory == nil ||
 		*compiler.Properties.Include_build_directory {
-		flags.Local.CommonFlags = append(flags.Local.CommonFlags, "-I"+modulePath)
-		flags.Local.YasmFlags = append(flags.Local.YasmFlags, "-I"+modulePath)
+		flags.GlobalFlags = append(flags.GlobalFlags, "-I"+android.PathForModuleSrc(ctx).String())
+		flags.YasmFlags = append(flags.YasmFlags, "-I"+android.PathForModuleSrc(ctx).String())
 	}
 
 	if !(ctx.useSdk() || ctx.useVndk()) || ctx.Host() {
@@ -313,28 +313,35 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags, deps
 		flags.SystemIncludeFlags = append(flags.SystemIncludeFlags,
 			"-isystem "+getCurrentIncludePath(ctx).String(),
 			"-isystem "+getCurrentIncludePath(ctx).Join(ctx, config.NDKTriple(tc)).String())
+
+		// TODO: Migrate to API suffixed triple?
+		// Traditionally this has come from android/api-level.h, but with the
+		// libc headers unified it must be set by the build system since we
+		// don't have per-API level copies of that header now.
+		version := ctx.sdkVersion()
+		if version == "current" {
+			version = "__ANDROID_API_FUTURE__"
+		}
+		flags.GlobalFlags = append(flags.GlobalFlags,
+			"-D__ANDROID_API__="+version)
 	}
 
 	if ctx.useVndk() {
-		flags.Global.CommonFlags = append(flags.Global.CommonFlags, "-D__ANDROID_VNDK__")
+		// sdkVersion() returns VNDK version for vendor modules.
+		version := ctx.sdkVersion()
+		if version == "current" {
+			version = "__ANDROID_API_FUTURE__"
+		}
+		flags.GlobalFlags = append(flags.GlobalFlags,
+			"-D__ANDROID_API__="+version, "-D__ANDROID_VNDK__")
 	}
 
 	if ctx.inRecovery() {
-		flags.Global.CommonFlags = append(flags.Global.CommonFlags, "-D__ANDROID_RECOVERY__")
+		flags.GlobalFlags = append(flags.GlobalFlags, "-D__ANDROID_RECOVERY__")
 	}
 
-	if ctx.apexVariationName() != "" {
-		flags.Global.CommonFlags = append(flags.Global.CommonFlags, "-D__ANDROID_APEX__")
-		if Bool(compiler.Properties.Use_apex_name_macro) {
-			flags.Global.CommonFlags = append(flags.Global.CommonFlags, "-D__ANDROID_APEX_"+makeDefineString(ctx.apexVariationName())+"__")
-		}
-		if ctx.Device() {
-			flags.Global.CommonFlags = append(flags.Global.CommonFlags, "-D__ANDROID_SDK_VERSION__="+strconv.Itoa(ctx.apexSdkVersion()))
-		}
-	}
-
-	if ctx.Target().NativeBridge == android.NativeBridgeEnabled {
-		flags.Global.CommonFlags = append(flags.Global.CommonFlags, "-D__ANDROID_NATIVE_BRIDGE__")
+	if ctx.apexName() != "" {
+		flags.GlobalFlags = append(flags.GlobalFlags, "-D__ANDROID_APEX__="+ctx.apexName())
 	}
 
 	instructionSet := String(compiler.Properties.Instruction_set)
@@ -349,69 +356,60 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags, deps
 	CheckBadCompilerFlags(ctx, "release.cflags", compiler.Properties.Release.Cflags)
 
 	// TODO: debug
-	flags.Local.CFlags = append(flags.Local.CFlags, esc(compiler.Properties.Release.Cflags)...)
+	flags.CFlags = append(flags.CFlags, esc(compiler.Properties.Release.Cflags)...)
 
 	CheckBadCompilerFlags(ctx, "clang_cflags", compiler.Properties.Clang_cflags)
 	CheckBadCompilerFlags(ctx, "clang_asflags", compiler.Properties.Clang_asflags)
 
-	flags.Local.CFlags = config.ClangFilterUnknownCflags(flags.Local.CFlags)
-	flags.Local.CFlags = append(flags.Local.CFlags, esc(compiler.Properties.Clang_cflags)...)
-	flags.Local.AsFlags = append(flags.Local.AsFlags, esc(compiler.Properties.Clang_asflags)...)
-	flags.Local.CppFlags = config.ClangFilterUnknownCflags(flags.Local.CppFlags)
-	flags.Local.ConlyFlags = config.ClangFilterUnknownCflags(flags.Local.ConlyFlags)
-	flags.Local.LdFlags = config.ClangFilterUnknownCflags(flags.Local.LdFlags)
+	flags.CFlags = config.ClangFilterUnknownCflags(flags.CFlags)
+	flags.CFlags = append(flags.CFlags, esc(compiler.Properties.Clang_cflags)...)
+	flags.AsFlags = append(flags.AsFlags, esc(compiler.Properties.Clang_asflags)...)
+	flags.CppFlags = config.ClangFilterUnknownCflags(flags.CppFlags)
+	flags.ConlyFlags = config.ClangFilterUnknownCflags(flags.ConlyFlags)
+	flags.LdFlags = config.ClangFilterUnknownCflags(flags.LdFlags)
 
 	target := "-target " + tc.ClangTriple()
-	if ctx.Os().Class == android.Device {
-		version := ctx.sdkVersion()
-		if version == "" || version == "current" {
-			target += strconv.Itoa(android.FutureApiLevel)
-		} else {
-			target += version
-		}
-	}
-
 	gccPrefix := "-B" + config.ToolPath(tc)
 
-	flags.Global.CFlags = append(flags.Global.CFlags, target, gccPrefix)
-	flags.Global.AsFlags = append(flags.Global.AsFlags, target, gccPrefix)
-	flags.Global.LdFlags = append(flags.Global.LdFlags, target, gccPrefix)
+	flags.CFlags = append(flags.CFlags, target, gccPrefix)
+	flags.AsFlags = append(flags.AsFlags, target, gccPrefix)
+	flags.LdFlags = append(flags.LdFlags, target, gccPrefix)
 
 	hod := "Host"
 	if ctx.Os().Class == android.Device {
 		hod = "Device"
 	}
 
-	flags.Global.CommonFlags = append(flags.Global.CommonFlags, instructionSetFlags)
-	flags.Global.ConlyFlags = append([]string{"${config.CommonGlobalConlyflags}"}, flags.Global.ConlyFlags...)
-	flags.Global.CppFlags = append([]string{fmt.Sprintf("${config.%sGlobalCppflags}", hod)}, flags.Global.CppFlags...)
+	flags.GlobalFlags = append(flags.GlobalFlags, instructionSetFlags)
+	flags.ConlyFlags = append([]string{"${config.CommonGlobalConlyflags}"}, flags.ConlyFlags...)
+	flags.CppFlags = append([]string{fmt.Sprintf("${config.%sGlobalCppflags}", hod)}, flags.CppFlags...)
 
-	flags.Global.AsFlags = append(flags.Global.AsFlags, tc.ClangAsflags())
-	flags.Global.CppFlags = append([]string{"${config.CommonClangGlobalCppflags}"}, flags.Global.CppFlags...)
-	flags.Global.CommonFlags = append(flags.Global.CommonFlags,
+	flags.AsFlags = append(flags.AsFlags, tc.ClangAsflags())
+	flags.CppFlags = append([]string{"${config.CommonClangGlobalCppflags}"}, flags.CppFlags...)
+	flags.GlobalFlags = append(flags.GlobalFlags,
 		tc.ClangCflags(),
 		"${config.CommonClangGlobalCflags}",
 		fmt.Sprintf("${config.%sClangGlobalCflags}", hod))
 
-	if isThirdParty(modulePath) {
-		flags.Global.CommonFlags = append([]string{"${config.ClangExternalCflags}"}, flags.Global.CommonFlags...)
+	if strings.HasPrefix(android.PathForModuleSrc(ctx).String(), "external/") {
+		flags.GlobalFlags = append([]string{"${config.ClangExternalCflags}"}, flags.GlobalFlags...)
 	}
 
 	if tc.Bionic() {
 		if Bool(compiler.Properties.Rtti) {
-			flags.Local.CppFlags = append(flags.Local.CppFlags, "-frtti")
+			flags.CppFlags = append(flags.CppFlags, "-frtti")
 		} else {
-			flags.Local.CppFlags = append(flags.Local.CppFlags, "-fno-rtti")
+			flags.CppFlags = append(flags.CppFlags, "-fno-rtti")
 		}
 	}
 
-	flags.Global.AsFlags = append(flags.Global.AsFlags, "-D__ASSEMBLY__")
+	flags.AsFlags = append(flags.AsFlags, "-D__ASSEMBLY__")
 
-	flags.Global.CppFlags = append(flags.Global.CppFlags, tc.ClangCppflags())
+	flags.CppFlags = append(flags.CppFlags, tc.ClangCppflags())
 
-	flags.Global.YasmFlags = append(flags.Global.YasmFlags, tc.YasmFlags())
+	flags.YasmFlags = append(flags.YasmFlags, tc.YasmFlags())
 
-	flags.Global.CommonFlags = append(flags.Global.CommonFlags, tc.ToolchainClangCflags())
+	flags.GlobalFlags = append(flags.GlobalFlags, tc.ToolchainClangCflags())
 
 	cStd := config.CStdVersion
 	if String(compiler.Properties.C_std) == "experimental" {
@@ -433,15 +431,15 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags, deps
 		cppStd = gnuToCReplacer.Replace(cppStd)
 	}
 
-	flags.Local.ConlyFlags = append([]string{"-std=" + cStd}, flags.Local.ConlyFlags...)
-	flags.Local.CppFlags = append([]string{"-std=" + cppStd}, flags.Local.CppFlags...)
+	flags.ConlyFlags = append([]string{"-std=" + cStd}, flags.ConlyFlags...)
+	flags.CppFlags = append([]string{"-std=" + cppStd}, flags.CppFlags...)
 
 	if ctx.useVndk() {
-		flags.Local.CFlags = append(flags.Local.CFlags, esc(compiler.Properties.Target.Vendor.Cflags)...)
+		flags.CFlags = append(flags.CFlags, esc(compiler.Properties.Target.Vendor.Cflags)...)
 	}
 
 	if ctx.inRecovery() {
-		flags.Local.CFlags = append(flags.Local.CFlags, esc(compiler.Properties.Target.Recovery.Cflags)...)
+		flags.CFlags = append(flags.CFlags, esc(compiler.Properties.Target.Recovery.Cflags)...)
 	}
 
 	// We can enforce some rules more strictly in the code we own. strict
@@ -450,14 +448,14 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags, deps
 	// vendor/device specific things), we could extend this to be a ternary
 	// value.
 	strict := true
-	if strings.HasPrefix(modulePath, "external/") {
+	if strings.HasPrefix(android.PathForModuleSrc(ctx).String(), "external/") {
 		strict = false
 	}
 
 	// Can be used to make some annotations stricter for code we can fix
 	// (such as when we mark functions as deprecated).
 	if strict {
-		flags.Global.CFlags = append(flags.Global.CFlags, "-DANDROID_STRICT")
+		flags.CFlags = append(flags.CFlags, "-DANDROID_STRICT")
 	}
 
 	if compiler.hasSrcExt(".proto") {
@@ -465,12 +463,12 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags, deps
 	}
 
 	if compiler.hasSrcExt(".y") || compiler.hasSrcExt(".yy") {
-		flags.Local.CommonFlags = append(flags.Local.CommonFlags,
+		flags.GlobalFlags = append(flags.GlobalFlags,
 			"-I"+android.PathForModuleGen(ctx, "yacc", ctx.ModuleDir()).String())
 	}
 
 	if compiler.hasSrcExt(".mc") {
-		flags.Local.CommonFlags = append(flags.Local.CommonFlags,
+		flags.GlobalFlags = append(flags.GlobalFlags,
 			"-I"+android.PathForModuleGen(ctx, "windmc", ctx.ModuleDir()).String())
 	}
 
@@ -488,41 +486,35 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags, deps
 			flags.aidlFlags = append(flags.aidlFlags, "-t")
 		}
 
-		flags.Local.CommonFlags = append(flags.Local.CommonFlags,
+		flags.GlobalFlags = append(flags.GlobalFlags,
 			"-I"+android.PathForModuleGen(ctx, "aidl").String())
 	}
 
-	if compiler.hasSrcExt(".rscript") || compiler.hasSrcExt(".fs") {
+	if compiler.hasSrcExt(".rs") || compiler.hasSrcExt(".fs") {
 		flags = rsFlags(ctx, flags, &compiler.Properties)
 	}
 
 	if compiler.hasSrcExt(".sysprop") {
-		flags.Local.CommonFlags = append(flags.Local.CommonFlags,
+		flags.GlobalFlags = append(flags.GlobalFlags,
 			"-I"+android.PathForModuleGen(ctx, "sysprop", "include").String())
 	}
 
 	if len(compiler.Properties.Srcs) > 0 {
 		module := ctx.ModuleDir() + "/Android.bp:" + ctx.ModuleName()
-		if inList("-Wno-error", flags.Local.CFlags) || inList("-Wno-error", flags.Local.CppFlags) {
+		if inList("-Wno-error", flags.CFlags) || inList("-Wno-error", flags.CppFlags) {
 			addToModuleList(ctx, modulesUsingWnoErrorKey, module)
-		} else if !inList("-Werror", flags.Local.CFlags) && !inList("-Werror", flags.Local.CppFlags) {
+		} else if !inList("-Werror", flags.CFlags) && !inList("-Werror", flags.CppFlags) {
 			if warningsAreAllowed(ctx.ModuleDir()) {
 				addToModuleList(ctx, modulesAddedWallKey, module)
-				flags.Local.CFlags = append([]string{"-Wall"}, flags.Local.CFlags...)
+				flags.CFlags = append([]string{"-Wall"}, flags.CFlags...)
 			} else {
-				flags.Local.CFlags = append([]string{"-Wall", "-Werror"}, flags.Local.CFlags...)
+				flags.CFlags = append([]string{"-Wall", "-Werror"}, flags.CFlags...)
 			}
 		}
 	}
 
 	if Bool(compiler.Properties.Openmp) {
-		flags.Local.CFlags = append(flags.Local.CFlags, "-fopenmp")
-	}
-
-	// Exclude directories from manual binder interface allowed list.
-	//TODO(b/145621474): Move this check into IInterface.h when clang-tidy no longer uses absolute paths.
-	if android.HasAnyPrefix(ctx.ModuleDir(), allowedManualInterfacePaths) {
-		flags.Local.CFlags = append(flags.Local.CFlags, "-DDO_NOT_CHECK_MANUAL_BINDER_INTERFACES")
+		flags.CFlags = append(flags.CFlags, "-fopenmp")
 	}
 
 	return flags
@@ -548,16 +540,6 @@ func (compiler *baseCompiler) hasSrcExt(ext string) bool {
 	return false
 }
 
-func (compiler *baseCompiler) uniqueApexVariations() bool {
-	return Bool(compiler.Properties.Use_apex_name_macro)
-}
-
-// makeDefineString transforms a name of an APEX module into a value to be used as value for C define
-// For example, com.android.foo => COM_ANDROID_FOO
-func makeDefineString(name string) string {
-	return strings.ReplaceAll(strings.ToUpper(name), ".", "_")
-}
-
 var gnuToCReplacer = strings.NewReplacer("gnu", "c")
 
 func ndkPathDeps(ctx ModuleContext) android.Paths {
@@ -570,7 +552,7 @@ func ndkPathDeps(ctx ModuleContext) android.Paths {
 }
 
 func (compiler *baseCompiler) compile(ctx ModuleContext, flags Flags, deps PathDeps) Objects {
-	pathDeps := deps.GeneratedDeps
+	pathDeps := deps.GeneratedHeaders
 	pathDeps = append(pathDeps, ndkPathDeps(ctx)...)
 
 	buildFlags := flagsToBuilderFlags(flags)
@@ -601,25 +583,4 @@ func compileObjs(ctx android.ModuleContext, flags builderFlags,
 	subdir string, srcFiles, pathDeps android.Paths, cFlagsDeps android.Paths) Objects {
 
 	return TransformSourceToObj(ctx, subdir, srcFiles, flags, pathDeps, cFlagsDeps)
-}
-
-var thirdPartyDirPrefixExceptions = []*regexp.Regexp{
-	regexp.MustCompile("^vendor/[^/]*google[^/]*/"),
-	regexp.MustCompile("^hardware/google/"),
-	regexp.MustCompile("^hardware/interfaces/"),
-	regexp.MustCompile("^hardware/libhardware[^/]*/"),
-	regexp.MustCompile("^hardware/ril/"),
-}
-
-func isThirdParty(path string) bool {
-	thirdPartyDirPrefixes := []string{"external/", "vendor/", "hardware/"}
-
-	if android.HasAnyPrefix(path, thirdPartyDirPrefixes) {
-		for _, prefix := range thirdPartyDirPrefixExceptions {
-			if prefix.MatchString(path) {
-				return false
-			}
-		}
-	}
-	return true
 }
